@@ -4,6 +4,10 @@ A SABnzbd-compatible shim that forwards NZB requests from Sonarr/Radarr to
 [TorBox](https://torbox.app)'s usenet API and reports the resulting cloud-side
 folder back to the *arrs via the existing rclone WebDAV mount.
 
+> _Why "Arrarr"? `torboxarr` was already taken, and the \*arr suite owns every
+> clean variation. Doubling the arr was the path of least resistance. Naming
+> things is hard._
+
 **Files never hit local disk.** Arrarr only stores SQLite state + a transient
 NZB blob (dropped on success). Everything media-shaped lives on TorBox.
 
