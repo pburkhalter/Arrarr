@@ -26,8 +26,18 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// SABnzbd clients (notably Sonarr/Radarr) reject `"slots": null`; an empty
+	// queue must serialize as `"slots": []`.
+	slots := make([]QueueSlot, 0, len(jobs))
+	for i, j := range jobs {
+		slots = append(slots, queueSlotFromJob(i, j))
+	}
+	status := "Idle"
+	if len(jobs) > 0 {
+		status = "Downloading"
+	}
 	resp := QueueResp{Queue: Queue{
-		Status:         "Idle",
+		Status:         status,
 		Speed:          "0 B/s",
 		Kbpersec:       "0",
 		Speedlimit:     "100",
@@ -37,13 +47,8 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 		Start:          0,
 		NoofSlotsTotal: len(jobs),
 		NoofSlots:      len(jobs),
+		Slots:          slots,
 	}}
-	if len(jobs) > 0 {
-		resp.Queue.Status = "Downloading"
-	}
-	for i, j := range jobs {
-		resp.Queue.Slots = append(resp.Queue.Slots, queueSlotFromJob(i, j))
-	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -81,7 +86,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	resp := HistoryResp{History: History{NoofSlots: len(jobs)}}
+	resp := HistoryResp{History: History{NoofSlots: len(jobs), Slots: make([]HistorySlot, 0, len(jobs))}}
 	for _, j := range jobs {
 		slot := HistorySlot{
 			NzoID:        j.NzoID,

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +42,28 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 		CompleteDir: "/torbox",
 	})
 	return srv, st
+}
+
+// Sonarr/Radarr crash with "Unable to retrieve queue and history items" when
+// SAB returns "slots": null. Empty must serialize as "slots": [].
+func TestEmptyQueueAndHistorySlotsAreEmptyArrays(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	for _, mode := range []string{"queue", "history"} {
+		r := httptest.NewRequest("GET", "/sabnzbd/api?mode="+mode+"&apikey=secret&output=json", nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatalf("mode=%s status=%d body=%s", mode, w.Code, w.Body.String())
+		}
+		body := w.Body.String()
+		if strings.Contains(body, `"slots":null`) {
+			t.Errorf("mode=%s body contains slots:null — Sonarr will reject. body=%s", mode, body)
+		}
+		if !strings.Contains(body, `"slots":[]`) {
+			t.Errorf("mode=%s body should contain slots:[] when empty. body=%s", mode, body)
+		}
+	}
 }
 
 func TestVersionUnauthenticated(t *testing.T) {
