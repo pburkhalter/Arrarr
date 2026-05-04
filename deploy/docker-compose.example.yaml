@@ -1,0 +1,21 @@
+services:
+  arrarr:
+    image: ghcr.io/pburkhalter/arrarr:latest
+    container_name: arrarr
+    restart: unless-stopped
+    ports:
+      - "8086:8080"
+    environment:
+      ARRARR_API_KEY: ${ARRARR_API_KEY}
+      TORBOX_API_KEY: ${TORBOX_API_KEY}
+      ARRARR_URL_BASE: /sabnzbd
+      LOCAL_VERIFY_BASE: /torbox
+      SONARR_VISIBLE_BASE: /torbox
+      DB_PATH: /data/arrarr.db
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+    volumes:
+      - /opt/docker-data/arrarr:/data
+      - /mnt/torbox:/torbox:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

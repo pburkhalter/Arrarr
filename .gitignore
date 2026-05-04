@@ -1,0 +1,10 @@
+/arrarr
+/dist/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.local
+*.test
+coverage.out
+.claude/
