@@ -154,3 +154,16 @@ func TestEnvelopeDecode(t *testing.T) {
 		t.Errorf("decoded=%+v", c)
 	}
 }
+
+// TorBox sometimes returns auth_id and hash as strings; older versions of
+// CreateResp typed auth_id as int64 and broke decoding for every grab.
+func TestCreateRespToleratesUnusedStringFields(t *testing.T) {
+	raw := `{"queue_id":42,"id":99,"hash":"abc123","auth_id":"some-string-value"}`
+	var c CreateResp
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		t.Fatalf("decode should not fail on unknown-type fields: %v", err)
+	}
+	if c.QueueID != 42 || c.ID != 99 {
+		t.Errorf("got %+v", c)
+	}
+}

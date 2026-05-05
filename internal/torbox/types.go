@@ -10,10 +10,10 @@ type envelope struct {
 }
 
 type CreateResp struct {
-	QueueID int64  `json:"queue_id"`
-	ID      int64  `json:"id"`
-	Hash    string `json:"hash,omitempty"`
-	AuthID  int64  `json:"auth_id,omitempty"`
+	QueueID int64 `json:"queue_id"`
+	ID      int64 `json:"id"`
+	// hash + auth_id are deliberately not parsed: TorBox sometimes returns
+	// them as strings, which broke createusenetdownload. We don't use them.
 }
 
 func (c *CreateResp) EffectiveID() int64 {
