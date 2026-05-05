@@ -225,6 +225,66 @@ func TestSubmitter429DoesNotIncrementAttempts(t *testing.T) {
 	}
 }
 
+// fakeFSAlwaysMissing simulates the case where arrarr's mount diverged from
+// Sonarr/Jellyfin's: the folder name is correct but stat() returns false
+// because arrarr captured a different namespace. Verifier must NOT block on
+// this — it should trust TorBox's API state.
+type fakeFSAlwaysMissing struct{}
+
+func (f *fakeFSAlwaysMissing) Exists(_ string) (bool, error) { return false, nil }
+
+func TestVerifierTrustsTorboxStateWhenLocalStatFails(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(context.Background(), filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	folder := "Some.Movie.GERMAN.DL.1080p.WEB.H264-XYZ"
+	mgr := New(Options{
+		Store:   st,
+		Torbox:  &fakeTorbox{folder: folder},
+		PathMap: pathmap.New("/m", "/v"),
+		FS:      &fakeFSAlwaysMissing{}, // arrarr's mount can't see the folder
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+	})
+
+	// Insert a job in COMPLETED_TORBOX with a folder name set.
+	j := &job.Job{
+		NzoID: "arrarr_diverged", Category: "sonarr",
+		Filename: folder + ".nzb", NzbSHA256: "h", NzbBlob: []byte("nzb"),
+		State: job.StateNew,
+	}
+	if err := st.Insert(context.Background(), j); err != nil {
+		t.Fatal(err)
+	}
+	// Walk through legal transitions to land in COMPLETED_TORBOX with folder set.
+	for _, step := range []store.Transition{
+		{From: job.StateNew, To: job.StateSubmitted},
+		{From: job.StateSubmitted, To: job.StateCompletedTorbox, TorboxFolderName: ptrString(folder)},
+	} {
+		if err := st.Transition(context.Background(), j.NzoID, step); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mgr.verifyOnce(context.Background())
+
+	got, err := st.Get(context.Background(), j.NzoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != job.StateReady {
+		t.Errorf("state=%s want READY (verifier should trust TorBox API even when local stat fails)", got.State)
+	}
+}
+
+func ptrString(s string) *string { return &s }
+
 // Verify the sentinel returned for unmatched MyListItem in poller doesn't blow up.
 func TestPollerHandlesEmpty(t *testing.T) {
 	dir := t.TempDir()
