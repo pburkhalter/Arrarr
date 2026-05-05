@@ -146,6 +146,85 @@ func TestEndToEndPipeline(t *testing.T) {
 	t.Fatalf("job did not reach READY in time. state=%s last_error=%v", final.State, final.LastError)
 }
 
+// TorBox returns 429 with body "60 per 1 hour" when its createusenetdownload
+// per-key cap is exceeded. That's transient backpressure, not a job failure —
+// the job must NOT advance toward MaxSubmitAttempts and must be rescheduled
+// far enough out that the retry doesn't immediately hit 429 again.
+type rateLimitedTorbox struct {
+	calls atomic.Int32
+}
+
+func (r *rateLimitedTorbox) CreateUsenetDownload(_ context.Context, _ string, _ []byte, _ string) (*torbox.CreateResp, error) {
+	r.calls.Add(1)
+	return nil, &torbox.APIError{Status: 429, Detail: "60 per 1 hour"}
+}
+func (r *rateLimitedTorbox) MyList(_ context.Context, _ bool) ([]torbox.MyListItem, error) {
+	return nil, nil
+}
+func (r *rateLimitedTorbox) ControlUsenet(_ context.Context, _ int64, _ string) error { return nil }
+
+func TestSubmitter429DoesNotIncrementAttempts(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(context.Background(), filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(Options{
+		Store:          st,
+		Torbox:         &rateLimitedTorbox{},
+		PathMap:        pathmap.New("/m", "/v"),
+		FS:             &fakeFS{folder: "x"},
+		Logger:         slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+		WorkerPoolSize: 1,
+	})
+
+	j := &job.Job{
+		NzoID:     "arrarr_429",
+		Category:  "sonarr",
+		Filename:  "test.nzb",
+		NzbSHA256: "h",
+		NzbBlob:   []byte("nzb"),
+		State:     job.StateNew,
+	}
+	if err := st.Insert(context.Background(), j); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run dispatchOnce repeatedly with claim windows reset between calls so
+	// the same job gets re-claimed each time. We expect: state stays NEW,
+	// attempts stays 0, regardless of how many times we hit 429.
+	for i := 0; i < 7; i++ {
+		// Open a new claim window
+		if _, err := st.DB().ExecContext(context.Background(),
+			`UPDATE jobs SET claimed_at = NULL, next_attempt_at = NULL WHERE nzo_id = ?`, j.NzoID); err != nil {
+			t.Fatal(err)
+		}
+		mgr.dispatchOnce(context.Background())
+	}
+
+	got, err := st.Get(context.Background(), j.NzoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != job.StateNew {
+		t.Errorf("state=%s want NEW (429 must not advance to FAILED)", got.State)
+	}
+	if got.Attempts != 0 {
+		t.Errorf("attempts=%d want 0 (429 must not count against MaxSubmitAttempts)", got.Attempts)
+	}
+	if !got.NextAttemptAt.Valid {
+		t.Errorf("expected next_attempt_at to be set after 429")
+	}
+	if got.LastError.String == "" {
+		t.Errorf("expected last_error to be set after 429")
+	}
+}
+
 // Verify the sentinel returned for unmatched MyListItem in poller doesn't blow up.
 func TestPollerHandlesEmpty(t *testing.T) {
 	dir := t.TempDir()

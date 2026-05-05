@@ -2,12 +2,14 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/pburkhalter/arrarr/internal/httpx"
 	"github.com/pburkhalter/arrarr/internal/job"
 	"github.com/pburkhalter/arrarr/internal/store"
+	"github.com/pburkhalter/arrarr/internal/torbox"
 )
 
 func (m *Manager) submitterLoop(ctx context.Context) {
@@ -88,6 +90,22 @@ func (m *Manager) submitOne(ctx context.Context, j *job.Job) {
 }
 
 func (m *Manager) handleSubmitFailure(ctx context.Context, j *job.Job, err error) {
+	// 429 from TorBox is transient backpressure, not a job-specific failure.
+	// Don't count it against MaxSubmitAttempts and back off well past the
+	// 60/hour createusenetdownload limit so retries don't burn the budget.
+	if is429(err) {
+		delay := 5*time.Minute + httpx.Backoff(1, time.Minute, 5*time.Minute)
+		if d := torboxRetryAfter(err); d > delay {
+			delay = d
+		}
+		next := time.Now().UTC().Add(delay)
+		m.log.Warn("submit rate-limited", "nzo_id", j.NzoID, "next_in", delay)
+		if e := m.o.Store.Reschedule(ctx, j.NzoID, describe(err), next); e != nil {
+			m.log.Error("reschedule write", "nzo_id", j.NzoID, "err", e)
+		}
+		return
+	}
+
 	attempts := j.Attempts + 1
 	m.log.Warn("submit failed", "nzo_id", j.NzoID, "attempt", attempts, "err", describe(err))
 
@@ -110,6 +128,14 @@ func (m *Manager) handleSubmitFailure(ctx context.Context, j *job.Job, err error
 	if e := m.o.Store.AttemptFailure(ctx, j.NzoID, describe(err), next); e != nil {
 		m.log.Error("attempt-failure write", "nzo_id", j.NzoID, "err", e)
 	}
+}
+
+func is429(err error) bool {
+	var apiErr *torbox.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Status == 429
+	}
+	return false
 }
 
 func torboxRetryAfter(err error) time.Duration {

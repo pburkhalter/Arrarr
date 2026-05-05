@@ -186,6 +186,19 @@ func (s *Store) AttemptFailure(ctx context.Context, nzoID, errMsg string, nextAt
 	return err
 }
 
+// Reschedule updates next_attempt_at + last_error without bumping the attempt
+// counter. Use for transient backpressure (e.g. TorBox 429) that shouldn't
+// count against MaxSubmitAttempts.
+func (s *Store) Reschedule(ctx context.Context, nzoID, errMsg string, nextAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET
+		last_error = ?,
+		next_attempt_at = ?,
+		claimed_at = NULL,
+		updated_at = CURRENT_TIMESTAMP
+		WHERE nzo_id = ?`, errMsg, nextAt, nzoID)
+	return err
+}
+
 func (s *Store) SetTorboxIDs(ctx context.Context, nzoID string, activeID *int64, folder *string) error {
 	sets := []string{"updated_at = CURRENT_TIMESTAMP"}
 	args := []any{}
