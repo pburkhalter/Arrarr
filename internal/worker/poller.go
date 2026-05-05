@@ -59,6 +59,18 @@ func (m *Manager) pollOnce(ctx context.Context) {
 		if item == nil && j.TorboxQueueID.Valid {
 			item = byID[j.TorboxQueueID.Int64]
 		}
+		// Fallback: when the submit response had 0/0 ids (TorBox returned a
+		// duplicate-style response without ids), match by name. TorBox's
+		// `name` field is the folder name, which equals filename minus .nzb.
+		if item == nil {
+			searchName := strings.TrimSuffix(j.Filename, ".nzb")
+			for i := range items {
+				if items[i].Name == searchName {
+					item = &items[i]
+					break
+				}
+			}
+		}
 		if item == nil {
 			m.handlePollMissing(ctx, j)
 			continue

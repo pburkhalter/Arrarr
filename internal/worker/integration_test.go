@@ -248,3 +248,75 @@ func TestPollerHandlesEmpty(t *testing.T) {
 		// keep imports tidy
 	}
 }
+
+// When a submit response gives queue_id=0 AND id=0 (TorBox sometimes does this
+// after the upload TCP read times out but the server still accepts the NZB),
+// the poller must still find the job via name match, not leave it stuck
+// SUBMITTED forever.
+type nameFallbackTorbox struct {
+	folderName string
+}
+
+func (t *nameFallbackTorbox) CreateUsenetDownload(_ context.Context, _ string, _ []byte, _ string) (*torbox.CreateResp, error) {
+	return &torbox.CreateResp{}, nil // 0/0 IDs
+}
+func (t *nameFallbackTorbox) MyList(_ context.Context, _ bool) ([]torbox.MyListItem, error) {
+	return []torbox.MyListItem{
+		{ID: 999, QueueID: 999, DownloadState: "completed", DownloadFinished: true, Name: t.folderName},
+	}, nil
+}
+func (t *nameFallbackTorbox) ControlUsenet(_ context.Context, _ int64, _ string) error { return nil }
+
+func TestPollerNameFallbackForZeroIDs(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(context.Background(), filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	folder := "Twisted.Metal.S02E01.GERMAN.DL.1080P.WEB.H264-WAYNE"
+	tb := &nameFallbackTorbox{folderName: folder}
+	mgr := New(Options{
+		Store:   st,
+		Torbox:  tb,
+		PathMap: pathmap.New("/m", "/v"),
+		FS:      &fakeFS{folder: folder},
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+	})
+
+	// Insert a job in SUBMITTED state with NO TorBox ids set — simulating the
+	// 0/0 response scenario after the rescue script wouldn't have populated them.
+	j := &job.Job{
+		NzoID:     "arrarr_zero",
+		Category:  "sonarr",
+		Filename:  folder + ".nzb",
+		NzbSHA256: "h",
+		NzbBlob:   []byte("nzb"),
+		State:     job.StateSubmitted,
+	}
+	if err := st.Insert(context.Background(), j); err != nil {
+		t.Fatal(err)
+	}
+	// Force state to SUBMITTED via direct SQL (Insert always uses j.State).
+	if _, err := st.DB().ExecContext(context.Background(),
+		`UPDATE jobs SET state='SUBMITTED' WHERE nzo_id=?`, j.NzoID); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr.pollOnce(context.Background())
+
+	got, err := st.Get(context.Background(), j.NzoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != job.StateCompletedTorbox {
+		t.Errorf("state=%s want COMPLETED_TORBOX (poller should've name-matched and advanced)", got.State)
+	}
+	if !got.TorboxFolderName.Valid || got.TorboxFolderName.String != folder {
+		t.Errorf("folder_name=%v want %q", got.TorboxFolderName, folder)
+	}
+}

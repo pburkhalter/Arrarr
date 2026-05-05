@@ -22,7 +22,10 @@ type Client struct {
 
 func NewClient(baseURL, apiKey string, perMin float64, timeout time.Duration) *Client {
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		// 90s — TorBox's createusenetdownload regularly takes 20-60s under load,
+		// and a too-short timeout causes the response to be lost while the upload
+		// still completes server-side, leaving arrarr unable to track the job.
+		timeout = 90 * time.Second
 	}
 	transport := httpx.NewRateLimitTransport(http.DefaultTransport, perMin, 10)
 	return &Client{

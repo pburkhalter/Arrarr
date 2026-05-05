@@ -70,6 +70,15 @@ func (m *Manager) submitOne(ctx context.Context, j *job.Job) {
 	}
 	queueID := resp.QueueID
 	activeID := resp.ID
+	// 0/0 means TorBox accepted upload but returned a "duplicate"-style response
+	// without ids (often after a previous timeout where the NZB was still
+	// processed server-side). Don't transition to SUBMITTED — the poller would
+	// have nothing to match against. The poller's name-fallback recovers the
+	// id later, but here we mark the submission so the job stays SUBMITTED only
+	// if at least one id is set.
+	if queueID == 0 && activeID == 0 {
+		m.log.Warn("submit returned 0/0 ids — letting poller name-match recover", "nzo_id", j.NzoID, "filename", j.Filename)
+	}
 	t := store.Transition{
 		From:         job.StateNew,
 		To:           job.StateSubmitted,
