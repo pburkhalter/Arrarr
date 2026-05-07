@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/pburkhalter/arrarr/internal/job"
+	"github.com/pburkhalter/arrarr/internal/librarian"
 	"github.com/pburkhalter/arrarr/internal/pathmap"
 	"github.com/pburkhalter/arrarr/internal/store"
 	"github.com/pburkhalter/arrarr/internal/torbox"
@@ -21,7 +23,9 @@ import (
 type fakeTorbox struct {
 	createCalls atomic.Int32
 	mylistCalls atomic.Int32
+	editCalls   atomic.Int32
 	folder      string
+	files       []torbox.MyListFile // attached to "completed" responses (for librarian)
 }
 
 func (f *fakeTorbox) CreateUsenetDownload(_ context.Context, _ string, _ []byte, _ string) (*torbox.CreateResp, error) {
@@ -37,11 +41,26 @@ func (f *fakeTorbox) MyList(_ context.Context, _ bool) ([]torbox.MyListItem, err
 	if n == 2 {
 		return []torbox.MyListItem{{ID: 99, QueueID: 11, DownloadState: "downloading", Progress: 0.5, Name: f.folder}}, nil
 	}
-	return []torbox.MyListItem{{ID: 99, QueueID: 11, DownloadState: "completed", DownloadFinished: true, Name: f.folder}}, nil
+	return []torbox.MyListItem{{
+		ID: 99, QueueID: 11,
+		DownloadState:    "completed",
+		DownloadFinished: true,
+		Name:             f.folder,
+		Files:            f.files,
+	}}, nil
 }
 
 func (f *fakeTorbox) ControlUsenet(_ context.Context, _ int64, _ string) error {
 	return nil
+}
+
+func (f *fakeTorbox) EditUsenet(_ context.Context, _ int64, _ torbox.EditUsenetParams) error {
+	f.editCalls.Add(1)
+	return nil
+}
+
+func (f *fakeTorbox) RequestUsenetDL(_ context.Context, _, fileID int64, _ bool) (string, error) {
+	return "https://cdn.torbox.app/test/file?id=" + strconv.FormatInt(fileID, 10), nil
 }
 
 // fakeFS pretends a folder appears after N misses, simulating WebDAV cache lag.
@@ -94,6 +113,7 @@ func TestEndToEndPipeline(t *testing.T) {
 		ReapEvery:      time.Hour,
 		ReapOlderThan:  time.Hour,
 		WorkerPoolSize: 2,
+		InstanceName:   "testhost",
 	})
 
 	// Insert a NEW job directly.
@@ -136,6 +156,9 @@ func TestEndToEndPipeline(t *testing.T) {
 			if len(got.NzbBlob) != 0 {
 				t.Errorf("nzb_blob should be cleared on success")
 			}
+			if tb.editCalls.Load() < 1 {
+				t.Errorf("expected at least one EditUsenet call (tagging), got %d", tb.editCalls.Load())
+			}
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -162,6 +185,12 @@ func (r *rateLimitedTorbox) MyList(_ context.Context, _ bool) ([]torbox.MyListIt
 	return nil, nil
 }
 func (r *rateLimitedTorbox) ControlUsenet(_ context.Context, _ int64, _ string) error { return nil }
+func (r *rateLimitedTorbox) EditUsenet(_ context.Context, _ int64, _ torbox.EditUsenetParams) error {
+	return nil
+}
+func (r *rateLimitedTorbox) RequestUsenetDL(_ context.Context, _, _ int64, _ bool) (string, error) {
+	return "", nil
+}
 
 func TestSubmitter429DoesNotIncrementAttempts(t *testing.T) {
 	dir := t.TempDir()
@@ -326,6 +355,12 @@ func (t *nameFallbackTorbox) MyList(_ context.Context, _ bool) ([]torbox.MyListI
 	}, nil
 }
 func (t *nameFallbackTorbox) ControlUsenet(_ context.Context, _ int64, _ string) error { return nil }
+func (t *nameFallbackTorbox) EditUsenet(_ context.Context, _ int64, _ torbox.EditUsenetParams) error {
+	return nil
+}
+func (t *nameFallbackTorbox) RequestUsenetDL(_ context.Context, _, _ int64, _ bool) (string, error) {
+	return "", nil
+}
 
 func TestPollerNameFallbackForZeroIDs(t *testing.T) {
 	dir := t.TempDir()
@@ -380,3 +415,137 @@ func TestPollerNameFallbackForZeroIDs(t *testing.T) {
 		t.Errorf("folder_name=%v want %q", got.TorboxFolderName, folder)
 	}
 }
+
+// TestEndToEndPipelineWithLibrarian exercises the v2 path: a librarian writer
+// is wired, the verifier should defer the COMPLETED_TORBOX → READY transition
+// to the librarian, and the librarian must write a STRM file under
+// /library/series/... before flipping the job to READY.
+func TestEndToEndPipelineWithLibrarian(t *testing.T) {
+	dir := t.TempDir()
+	libDir := t.TempDir()
+
+	st, err := store.Open(context.Background(), filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	folder := "Twisted.Metal.S02E01.GERMAN.DL.1080p.WEB.H264-WAYNE"
+	tb := &fakeTorbox{
+		folder: folder,
+		files: []torbox.MyListFile{
+			{ID: 1, Name: folder + "/Twisted.Metal.S02E01.WAYNE.mkv", ShortName: "Twisted.Metal.S02E01.WAYNE.mkv", Size: 1024, MimeType: "video/x-matroska"},
+		},
+	}
+	fs := &fakeFS{folder: folder}
+
+	pm := pathmap.New("/mnt/torbox", "/torbox")
+	wake := make(chan struct{}, 1)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	// LibraryMode "strm" with no Sonarr/Radarr → fallback layout under
+	// /library/series/<release>/<file>.strm.
+	libWriter, err := librarian.New("strm", libDir, "/mnt/torbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(Options{
+		Store:                    st,
+		Torbox:                   tb,
+		PathMap:                  pm,
+		FS:                       fs,
+		Logger:                   logger,
+		Wake:                     wake,
+		DispatchEvery:            20 * time.Millisecond,
+		PollEvery:                20 * time.Millisecond,
+		VerifyEvery:              20 * time.Millisecond,
+		ReapEvery:                time.Hour,
+		ReapOlderThan:            time.Hour,
+		WorkerPoolSize:           2,
+		InstanceName:             "testhost",
+		Librarian:                libWriter,
+		LocalVerifyBase:          "/mnt/torbox",
+		StreamingURLRefreshAfter: 5 * time.Hour,
+	})
+
+	j := &job.Job{
+		NzoID:     "arrarr_v2int",
+		Category:  "sonarr",
+		Filename:  folder + ".nzb",
+		NzbSHA256: "deadbeef-v2",
+		NzbBlob:   []byte("<nzb/>"),
+		State:     job.StateNew,
+	}
+	if err := st.Insert(context.Background(), j); err != nil {
+		t.Fatal(err)
+	}
+	wake <- struct{}{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- mgr.Run(ctx) }()
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := st.Get(context.Background(), "arrarr_v2int")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.State == job.StateReady {
+			cancel()
+			<-done
+			// STRM file must exist at the fallback path (no canonical naming
+			// because we didn't wire a Sonarr client).
+			expectedSTRM := filepath.Join(libDir, "series", folder, "Twisted.Metal.S02E01.WAYNE.strm")
+			if _, err := os.Stat(expectedSTRM); err != nil {
+				t.Errorf("expected STRM at %s: %v", expectedSTRM, err)
+			}
+			body, _ := os.ReadFile(expectedSTRM)
+			if !bytesContains(body, "cdn.torbox.app") {
+				t.Errorf("STRM body should contain CDN URL, got: %q", body)
+			}
+			// library_path + streaming_url should be populated.
+			row := st.DB().QueryRowContext(context.Background(),
+				`SELECT library_path, library_writer_state, streaming_url FROM jobs WHERE nzo_id=?`,
+				"arrarr_v2int")
+			var libPath, writerState, streamURL *string
+			if err := row.Scan(&libPath, &writerState, &streamURL); err != nil {
+				t.Fatal(err)
+			}
+			if libPath == nil || *libPath != expectedSTRM {
+				t.Errorf("library_path=%v want %s", libPath, expectedSTRM)
+			}
+			if writerState == nil || *writerState != "written" {
+				t.Errorf("library_writer_state=%v want 'written'", writerState)
+			}
+			if streamURL == nil || !bytesContains([]byte(*streamURL), "cdn.torbox.app") {
+				t.Errorf("streaming_url=%v want CDN URL", streamURL)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	final, _ := st.Get(context.Background(), "arrarr_v2int")
+	t.Fatalf("job did not reach READY (librarian path) in time. state=%s last_error=%v library_writer_state-via-extra-query: see jobs row", final.State, final.LastError)
+}
+
+// bytesContains avoids dragging "bytes" into imports just for testing.
+func bytesContains(haystack []byte, needle string) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if string(haystack[i:i+len(needle)]) == needle {
+			return true
+		}
+	}
+	return false
+}
+

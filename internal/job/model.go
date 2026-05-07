@@ -2,8 +2,21 @@ package job
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 )
+
+// nzoIDPrefix is the prefix the SAB layer applies to nzo_ids (see internal/sab/addfile.go).
+// Stripping it gives a clean hex UUID suitable as a tag identifier on TorBox.
+const nzoIDPrefix = "arrarr_"
+
+// TagID returns the UUID portion of a job's nzo_id, suitable for use as a
+// stable identifier in TorBox tags (e.g. "job:<TagID>") and as a lookup key
+// in webhook payloads. Returns the input unchanged if it lacks the prefix
+// (forward-compatibility for hand-inserted rows or future ID schemes).
+func TagID(nzoID string) string {
+	return strings.TrimPrefix(nzoID, nzoIDPrefix)
+}
 
 type Job struct {
 	NzoID            string

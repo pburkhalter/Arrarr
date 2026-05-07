@@ -71,6 +71,12 @@ func (m *Manager) verifyOnce(ctx context.Context) {
 			m.log.Info("verify: not visible in arrarr's mount yet — trusting TorBox API state",
 				"nzo_id", j.NzoID, "expected_path", path)
 		}
+		// When the librarian is configured (v2), it owns the COMPLETED_TORBOX
+		// → READY transition so it can write the structured library entry first.
+		// We only need to validate folder visibility above and bail.
+		if m.o.Librarian != nil {
+			continue
+		}
 		if err := m.o.Store.Transition(ctx, j.NzoID, store.Transition{
 			From:         job.StateCompletedTorbox,
 			To:           job.StateReady,

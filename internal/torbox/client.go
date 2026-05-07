@@ -97,6 +97,83 @@ func (c *Client) MyList(ctx context.Context, bypassCache bool) ([]MyListItem, er
 	return out, nil
 }
 
+// EditUsenetParams is the request body for EditUsenet. Pointer + omitempty so
+// we only overwrite fields we explicitly set — TorBox's edit endpoint replaces
+// pre-existing data for whatever fields are present in the body.
+type EditUsenetParams struct {
+	Name              *string  `json:"name,omitempty"`
+	Tags              []string `json:"tags,omitempty"`
+	AlternativeHashes []string `json:"alternative_hashes,omitempty"`
+}
+
+// EditUsenet sets metadata on an existing usenet download. The download must
+// already be "cached" (TorBox-internal: past initial processing). Calling this
+// immediately after CreateUsenetDownload may fail with 4xx until the row is
+// cached; the caller should treat such failures as soft (retry later) rather
+// than failing the whole job.
+func (c *Client) EditUsenet(ctx context.Context, id int64, p EditUsenetParams) error {
+	type editBody struct {
+		UsenetDownloadID int64 `json:"usenet_download_id"`
+		EditUsenetParams
+	}
+	raw, err := json.Marshal(editBody{UsenetDownloadID: id, EditUsenetParams: p})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		c.BaseURL+"/usenet/editusenetdownload", strings.NewReader(string(raw)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.auth(req)
+	return c.do(req, nil)
+}
+
+// RequestUsenetDL returns a CDN download URL for a single file inside a usenet
+// download. URL is presigned and time-limited (typically ~6 hours). Callers
+// should refresh STRMs well before that window. fileID 0 returns a zip-link.
+func (c *Client) RequestUsenetDL(ctx context.Context, usenetID, fileID int64, zipLink bool) (string, error) {
+	q := url.Values{}
+	q.Set("token", c.APIKey)
+	q.Set("usenet_id", fmt.Sprintf("%d", usenetID))
+	if fileID > 0 {
+		q.Set("file_id", fmt.Sprintf("%d", fileID))
+	}
+	if zipLink {
+		q.Set("zip_link", "true")
+	}
+	q.Set("redirect", "false")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.BaseURL+"/usenet/requestdl?"+q.Encode(), nil)
+	if err != nil {
+		return "", err
+	}
+	c.auth(req)
+
+	var dlURL string
+	if err := c.do(req, &dlURL); err != nil {
+		return "", err
+	}
+	return dlURL, nil
+}
+
+// TestNotification asks TorBox to fire one notification through every
+// configured channel (email, webhook, telegram, etc.). Useful for verifying a
+// just-configured webhook URL+secret without waiting for a real download.
+//
+// Server-side rate limited to 1/min — running this repeatedly returns 429.
+func (c *Client) TestNotification(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.BaseURL+"/notifications/test", nil)
+	if err != nil {
+		return err
+	}
+	c.auth(req)
+	return c.do(req, nil)
+}
+
 func (c *Client) ControlUsenet(ctx context.Context, id int64, operation string) error {
 	body := strings.NewReader(fmt.Sprintf(`{"usenet_id":%d,"operation":%q}`, id, operation))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,

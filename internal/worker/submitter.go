@@ -96,6 +96,48 @@ func (m *Manager) submitOne(ctx context.Context, j *job.Job) {
 		return
 	}
 	m.log.Info("submitted", "nzo_id", j.NzoID, "queue_id", queueID, "active_id", activeID, "filename", j.Filename)
+
+	// Best-effort tag the download on TorBox. Tags identify our downloads on
+	// shared accounts and let the webhook handler filter "ours vs theirs"
+	// without parsing the human-readable name. Failure here is non-fatal —
+	// TorBox's edit endpoint requires the item to be "cached" (past initial
+	// processing), so it often fails immediately after create. A future tagger
+	// worker (Phase B/C) will retry rows with tagged_at IS NULL.
+	m.tryTagAfterSubmit(ctx, j, queueID, activeID)
+}
+
+// tryTagAfterSubmit attempts a best-effort PUT to /usenet/editusenetdownload to
+// set the ownership tags on the just-created download. Logs but does not fail.
+func (m *Manager) tryTagAfterSubmit(ctx context.Context, j *job.Job, queueID, activeID int64) {
+	id := activeID
+	if id == 0 {
+		id = queueID
+	}
+	if id == 0 {
+		// 0/0 ids means we have nothing to tag against yet; the poller will
+		// recover ids by name match, and a future tagger pass can apply tags.
+		return
+	}
+	tagID := job.TagID(j.NzoID)
+	tags := []string{
+		"arrarr",
+		"host:" + m.o.InstanceName,
+		"job:" + tagID,
+		"cat:" + j.Category,
+	}
+	// Cap the request to a separate timeout — the create call may have used the
+	// 90s envelope; tagging shouldn't compete.
+	tagCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err := m.o.Torbox.EditUsenet(tagCtx, id, torbox.EditUsenetParams{Tags: tags}); err != nil {
+		m.log.Warn("tag write failed (non-fatal)", "nzo_id", j.NzoID, "id", id, "err", describe(err))
+		return
+	}
+	if err := m.o.Store.MarkTagged(ctx, j.NzoID); err != nil {
+		m.log.Warn("mark tagged write failed", "nzo_id", j.NzoID, "err", err)
+		return
+	}
+	m.log.Info("tagged", "nzo_id", j.NzoID, "id", id, "tags", tags)
 }
 
 func (m *Manager) handleSubmitFailure(ctx context.Context, j *job.Job, err error) {

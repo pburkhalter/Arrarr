@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="30">
+<title>Arrarr — status</title>
+<style>
+  :root {
+    --fg: #d8d8d8;
+    --fg-dim: #888;
+    --bg: #181a1f;
+    --panel: #21242b;
+    --accent: #7aa2f7;
+    --ok: #9ece6a;
+    --warn: #e0af68;
+    --err: #f7768e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--fg);
+    margin: 0; padding: 24px; max-width: 1100px;
+  }
+  h1 { color: var(--accent); margin: 0 0 4px; font-weight: 500; }
+  h2 { color: var(--fg); font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em;
+       margin: 28px 0 8px; font-weight: 600; }
+  .meta { color: var(--fg-dim); font-size: 12px; margin-bottom: 24px; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+  .card { background: var(--panel); border-radius: 6px; padding: 12px 14px; }
+  .card .label { color: var(--fg-dim); font-size: 11px; text-transform: uppercase;
+                 letter-spacing: 0.05em; margin-bottom: 4px; }
+  .card .value { font-size: 24px; font-weight: 500; font-feature-settings: "tnum"; }
+  .card .sub { color: var(--fg-dim); font-size: 12px; margin-top: 4px; }
+  .stack { display: flex; gap: 12px; flex-wrap: wrap; }
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-size: 11px; background: #2c2f36; color: var(--fg-dim);
+    font-feature-settings: "tnum";
+  }
+  .pill.on  { background: #2a3b2a; color: var(--ok); }
+  .pill.off { background: #3a2a2a; color: var(--err); }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #2c2f36; vertical-align: top; }
+  th { color: var(--fg-dim); font-weight: 500; text-transform: uppercase;
+       font-size: 11px; letter-spacing: 0.05em; }
+  tr:hover td { background: #1d2026; }
+  td.id { font-family: ui-monospace, monospace; color: var(--fg-dim); }
+  td.path { font-family: ui-monospace, monospace; word-break: break-all; }
+  td.err { color: var(--err); max-width: 280px; word-break: break-word; }
+  .state-NEW              { color: var(--fg-dim); }
+  .state-SUBMITTED        { color: var(--accent); }
+  .state-DOWNLOADING      { color: var(--accent); }
+  .state-COMPLETED_TORBOX { color: var(--warn); }
+  .state-READY            { color: var(--ok); }
+  .state-FAILED           { color: var(--err); }
+  .state-CANCELED         { color: var(--fg-dim); }
+  .lib-pending { color: var(--warn); }
+  .lib-written { color: var(--ok); }
+  .lib-failed  { color: var(--err); }
+  .origin-mirror { color: var(--fg-dim); font-style: italic; }
+  footer { color: var(--fg-dim); font-size: 11px; margin-top: 32px; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>Arrarr</h1>
+<div class="meta">
+  instance <strong>{{ifEmpty .InstanceName "arrarr"}}</strong>
+  · generated {{ago .GeneratedAt}}
+  · auto-refresh 30s
+</div>
+
+<h2>Pipeline</h2>
+<div class="grid">
+  {{- range $state, $count := .Stats.StateCounts}}
+  <div class="card">
+    <div class="label state-{{$state}}">{{$state}}</div>
+    <div class="value">{{$count}}</div>
+  </div>
+  {{- end}}
+</div>
+
+<h2>Library writer</h2>
+<div class="grid">
+  {{- range $st, $count := .Stats.LibraryStateCounts}}
+  <div class="card">
+    <div class="label lib-{{$st}}">library_writer_state · {{$st}}</div>
+    <div class="value">{{$count}}</div>
+  </div>
+  {{- end}}
+  <div class="card">
+    <div class="label">URL refreshes due ≤1h</div>
+    <div class="value">{{.Stats.UpcomingRefreshes}}</div>
+  </div>
+  <div class="card">
+    <div class="label">Untagged on TorBox</div>
+    <div class="value">{{.Stats.UntaggedCount}}</div>
+    <div class="sub">tagger retries every 90s</div>
+  </div>
+</div>
+
+<h2>Origin</h2>
+<div class="stack">
+  {{- range $origin, $count := .Stats.OriginCounts}}
+  <div class="card">
+    <div class="label">origin · {{$origin}}</div>
+    <div class="value">{{$count}}</div>
+  </div>
+  {{- end}}
+</div>
+
+<h2>Configuration</h2>
+<div class="stack">
+  <div class="card">
+    <div class="label">Library</div>
+    <div class="value">
+      {{- if .LibraryEnabled -}}
+        <span class="pill on">{{.LibraryMode}}</span>
+      {{- else -}}
+        <span class="pill off">off</span>
+      {{- end -}}
+    </div>
+  </div>
+  <div class="card">
+    <div class="label">Webhook receiver</div>
+    <div class="value">
+      {{- if .WebhookEnabled -}}
+        <span class="pill on">on</span>
+      {{- else -}}
+        <span class="pill off">off</span>
+      {{- end -}}
+    </div>
+  </div>
+  <div class="card">
+    <div class="label">Pushover</div>
+    <div class="value">
+      {{- if .PushoverConfigured -}}
+        <span class="pill on">{{.PushoverNotifyOn}}</span>
+      {{- else -}}
+        <span class="pill off">off</span>
+      {{- end -}}
+    </div>
+  </div>
+  <div class="card">
+    <div class="label">Mirror mode</div>
+    <div class="value">
+      {{- if .MirrorEnabled -}}
+        <span class="pill on">on</span>
+      {{- else -}}
+        <span class="pill off">off</span>
+      {{- end -}}
+    </div>
+  </div>
+</div>
+
+<h2>Recent activity</h2>
+<table>
+  <thead>
+    <tr>
+      <th>nzo_id</th>
+      <th>state</th>
+      <th>library</th>
+      <th>origin</th>
+      <th>folder</th>
+      <th>updated</th>
+      <th>error</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{- range .Stats.Recent}}
+    <tr>
+      <td class="id">{{shortID .NzoID}}</td>
+      <td class="state-{{.State}}">{{.State}}</td>
+      <td class="lib-{{.LibraryWriterState}}">{{.LibraryWriterState}}{{if gt .LibraryAttempts 0}} ({{.LibraryAttempts}}×){{end}}</td>
+      <td class="origin-{{.Origin}}">{{.Origin}}</td>
+      <td class="path">{{ifEmpty .FolderName "—"}}</td>
+      <td>{{ago .UpdatedAt}}</td>
+      <td class="err">{{.LastError}}</td>
+    </tr>
+    {{- else}}
+    <tr><td colspan="7" style="color: var(--fg-dim); text-align: center; padding: 16px;">No jobs yet.</td></tr>
+    {{- end}}
+  </tbody>
+</table>
+
+<footer>
+  Arrarr — see <a href="https://github.com/pburkhalter/arrarr" style="color: var(--accent);">github.com/pburkhalter/arrarr</a> ·
+  <a href="/healthz" style="color: var(--accent);">healthz</a>
+</footer>
+
+</body>
+</html>

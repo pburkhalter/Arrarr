@@ -25,6 +25,14 @@ type Server struct {
 	pathMap   pathMapper
 	logger    *slog.Logger
 	completeDir string
+
+	// webhook is set when ARRARR_TORBOX_WEBHOOK_SECRET is configured. nil
+	// means the webhook receiver is disabled and returns 503.
+	webhook *WebhookOptions
+
+	// dashCfg is a read-only view of v2 config knobs the status page renders.
+	// Optional — when nil, the dashboard falls back to a minimal view.
+	dashCfg *DashboardConfig
 }
 
 type pathMapper interface {
@@ -40,6 +48,8 @@ type Options struct {
 	PathMap     pathMapper
 	Logger      *slog.Logger
 	CompleteDir string
+	Webhook     *WebhookOptions
+	Dashboard   *DashboardConfig
 }
 
 func NewServer(o Options) *Server {
@@ -55,6 +65,8 @@ func NewServer(o Options) *Server {
 		pathMap:     o.PathMap,
 		logger:      o.Logger,
 		completeDir: o.CompleteDir,
+		webhook:     o.Webhook,
+		dashCfg:     o.Dashboard,
 	}
 }
 
@@ -65,6 +77,8 @@ func (s *Server) Handler() http.Handler {
 	api := chi.NewRouter()
 	api.HandleFunc("/api", s.handleAPI)
 	api.Get("/healthz", s.handleHealthz)
+	api.Post("/webhook", s.handleTorBoxWebhook)
+	api.Get("/", s.handleStatus)
 
 	if s.urlBase == "" {
 		r.Mount("/", api)
