@@ -105,7 +105,14 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		switch j.State {
 		case job.StateReady:
 			slot.Status = "Completed"
-			if j.TorboxFolderName.Valid {
+			// v2: prefer the librarian's structured tree path so Sonarr/Radarr
+			// see the file already inside their Root Folder (in-place
+			// register, no copy/move). v1 fallback maps the TorBox folder
+			// through pathMap when no librarian wrote anything.
+			if j.LibraryPath.Valid && j.LibraryPath.String != "" {
+				slot.Storage = j.LibraryPath.String
+				slot.Path = j.LibraryPath.String
+			} else if j.TorboxFolderName.Valid {
 				if p, err := s.pathMap.Visible(j.TorboxFolderName.String); err == nil {
 					slot.Storage = p
 					slot.Path = p

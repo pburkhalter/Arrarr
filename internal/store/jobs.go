@@ -804,7 +804,7 @@ func (s *Store) Reap(ctx context.Context, before time.Time) (int64, error) {
 
 const jobColsList = `nzo_id, category, filename, nzb_sha256, nzb_blob, size_bytes, priority,
 	torbox_queue_id, torbox_active_id, torbox_folder_name, state, attempts, last_error,
-	claimed_at, next_attempt_at, created_at, updated_at, completed_at`
+	claimed_at, next_attempt_at, created_at, updated_at, completed_at, library_path`
 
 const jobSelectCols = `SELECT ` + jobColsList + ` FROM jobs`
 
@@ -818,7 +818,7 @@ func scanJob(r rowScanner) (*job.Job, error) {
 	err := r.Scan(
 		&j.NzoID, &j.Category, &j.Filename, &j.NzbSHA256, &j.NzbBlob, &j.SizeBytes, &j.Priority,
 		&j.TorboxQueueID, &j.TorboxActiveID, &j.TorboxFolderName, &state, &j.Attempts, &j.LastError,
-		&j.ClaimedAt, &j.NextAttemptAt, &j.CreatedAt, &j.UpdatedAt, &j.CompletedAt,
+		&j.ClaimedAt, &j.NextAttemptAt, &j.CreatedAt, &j.UpdatedAt, &j.CompletedAt, &j.LibraryPath,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

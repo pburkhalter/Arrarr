@@ -177,6 +177,67 @@ func TestAddFileToQueueToHistory(t *testing.T) {
 	}
 }
 
+// TestHistoryStoragePrefersLibraryPathWhenSet — v2 librarian writes a STRM
+// (or symlink) under /library/... and reports that path so Sonarr/Radarr do
+// an in-place register. Without this, Sonarr would try to import from the raw
+// /torbox/<folder> path and fight the read-only WebDAV mount.
+func TestHistoryStoragePrefersLibraryPathWhenSet(t *testing.T) {
+	srv, st := newTestServer(t)
+	ctx := context.Background()
+
+	body := []byte("<nzb/>")
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("name", "Twisted.Metal.S02E01.nzb")
+	_, _ = fw.Write(body)
+	mw.Close()
+	r := httptest.NewRequest("POST", "/sabnzbd/api?mode=addfile&apikey=secret&cat=sonarr", &buf)
+	r.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	var ar AddResp
+	if err := json.Unmarshal(w.Body.Bytes(), &ar); err != nil {
+		t.Fatal(err)
+	}
+	nzoID := ar.NzoIDs[0]
+
+	// Drive to READY via the librarian path: COMPLETED_TORBOX → MarkLibraryWritten
+	folder := "Twisted.Metal.S02E01.WEB.h264-WAYNE"
+	if err := st.Transition(ctx, nzoID, store.Transition{From: job.StateNew, To: job.StateSubmitted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTorboxIDs(ctx, nzoID, intP(99), &folder); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Transition(ctx, nzoID, store.Transition{From: job.StateSubmitted, To: job.StateCompletedTorbox}); err != nil {
+		t.Fatal(err)
+	}
+	libPath := "/library/series/Twisted Metal/Season 02/Twisted Metal - S02E01.strm"
+	streamURL := "https://cdn.torbox.app/abc"
+	expires := time.Now().Add(5 * time.Hour)
+	if err := st.MarkLibraryWritten(ctx, nzoID, libPath, &streamURL, &expires); err != nil {
+		t.Fatal(err)
+	}
+
+	r = httptest.NewRequest("GET", "/sabnzbd/api?mode=history&apikey=secret&output=json", nil)
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	var hr HistoryResp
+	if err := json.Unmarshal(w.Body.Bytes(), &hr); err != nil {
+		t.Fatal(err)
+	}
+	if len(hr.History.Slots) != 1 {
+		t.Fatalf("slots=%d want 1", len(hr.History.Slots))
+	}
+	got := hr.History.Slots[0]
+	if got.Storage != libPath {
+		t.Errorf("storage=%q want %q (librarian's library_path, not the v1 /torbox/ path)", got.Storage, libPath)
+	}
+	if got.Path != libPath {
+		t.Errorf("path=%q want %q", got.Path, libPath)
+	}
+}
+
 func TestAuthRequiredForQueue(t *testing.T) {
 	srv, _ := newTestServer(t)
 	r := httptest.NewRequest("GET", "/sabnzbd/api?mode=queue", nil)

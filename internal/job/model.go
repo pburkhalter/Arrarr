@@ -37,6 +37,13 @@ type Job struct {
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 	CompletedAt      sql.NullTime
+
+	// LibraryPath is the v2 librarian's structured-tree path. When set, the
+	// SAB history endpoint reports it as the completion path so Sonarr/Radarr
+	// do an in-place register against the file Arrarr already wrote (no
+	// copy, no move). When unset, the v1 fallback (pathMap-translated TorBox
+	// folder) is used.
+	LibraryPath sql.NullString
 }
 
 func (j *Job) EffectiveTorboxID() int64 {
