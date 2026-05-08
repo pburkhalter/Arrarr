@@ -57,7 +57,7 @@ type Config struct {
 	// --- v2: pushover ---
 	PushoverToken    string `env:"ARRARR_PUSHOVER_TOKEN"`
 	PushoverUser     string `env:"ARRARR_PUSHOVER_USER"`
-	PushoverNotifyOn string `env:"ARRARR_PUSHOVER_NOTIFY_ON" envDefault:"ready"`
+	PushoverNotifyOn string `env:"ARRARR_PUSHOVER_NOTIFY_ON" envDefault:"off"`
 
 	// --- v2: mirror mode ---
 	MirrorMode         string        `env:"ARRARR_MIRROR_MODE" envDefault:"off"`
