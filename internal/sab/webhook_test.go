@@ -60,6 +60,7 @@ func newWebhookServer(t *testing.T, secret string, notifyOn string) (*Server, *s
 		CompleteDir: "/torbox",
 		Webhook: &WebhookOptions{
 			Secret:           secret,
+			RequireSignature: true, // existing tests cover strict mode
 			ReplayWindow:     5 * time.Minute,
 			Pushover:         pc,
 			PushoverNotifyOn: notifyOn,
@@ -340,6 +341,57 @@ func TestWebhookOversizedBodyRejected(t *testing.T) {
 	srv.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("status=%d want 413", w.Code)
+	}
+}
+
+// TestWebhookInsecureModeAcceptsUnsigned exercises the RequireSignature=false
+// path used when integrating with TorBox-style webhook senders that don't
+// implement Standard Webhooks signing. The lookup chain still gates Pushover
+// (origin='self', match in DB), so unsigned spam can't trigger notifications.
+func TestWebhookInsecureModeAcceptsUnsigned(t *testing.T) {
+	dir := t.TempDir()
+	st, _ := store.Open(context.Background(), filepath.Join(dir, "t.db"))
+	defer st.Close()
+	_ = st.Migrate(context.Background())
+
+	srv := NewServer(Options{
+		APIKey:      "k",
+		URLBase:     "/sabnzbd",
+		MaxNZBBytes: 1 << 20,
+		Store:       Adapt(st),
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Webhook: &WebhookOptions{
+			Secret:           "shh",
+			RequireSignature: false,
+			ReplayWindow:     5 * time.Minute,
+		},
+	})
+
+	// POST with no signature headers at all — strict mode would 401, insecure
+	// mode should 204 (no matching job in DB → "not ours").
+	req := httptest.NewRequest("POST", "/sabnzbd/webhook",
+		bytes.NewReader([]byte(`{"event":"download.ready","data":{"id":1}}`)))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status=%d want 204 (insecure mode accepts unsigned, no match → drop)", w.Code)
+	}
+}
+
+func TestWebhookInsecureModeMatchesAndProcesses(t *testing.T) {
+	srv, st, _, _ := newWebhookServer(t, "shh", "off")
+	// Replace webhook opts to insecure mode
+	srv.webhook.RequireSignature = false
+
+	insertJobAtState(t, st, "arrarr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"sonarr", "X.Y.Z", 0, 555, job.StateCompletedTorbox, "self")
+
+	req := httptest.NewRequest("POST", "/sabnzbd/webhook",
+		bytes.NewReader([]byte(`{"event":"download.ready","data":{"id":555}}`)))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status=%d want 204", w.Code)
 	}
 }
 

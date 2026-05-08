@@ -162,11 +162,14 @@ func run() error {
 	if cfg.WebhookEnabled() {
 		webhookOpts = &sab.WebhookOptions{
 			Secret:           cfg.TorboxWebhookSecret,
+			RequireSignature: cfg.RequireWebhookSignature,
 			ReplayWindow:     cfg.WebhookReplayWindow,
 			Pushover:         pushoverClient,
 			PushoverNotifyOn: cfg.PushoverNotifyOn,
 		}
-		log.Info("torbox webhook receiver enabled", "replay_window", cfg.WebhookReplayWindow)
+		log.Info("torbox webhook receiver enabled",
+			"replay_window", cfg.WebhookReplayWindow,
+			"require_signature", cfg.RequireWebhookSignature)
 	}
 
 	wakeCh := make(chan struct{}, 1)

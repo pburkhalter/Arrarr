@@ -32,7 +32,18 @@ type WebhookOptions struct {
 	// Secret is the HMAC key TorBox uses to sign webhook deliveries. Empty
 	// disables the receiver — the handler returns 503 to make the misconfig
 	// loud, rather than silently accepting unsigned payloads.
+	//
+	// NOTE: TorBox does not currently expose a webhook signing secret in its
+	// UI or API, despite their docs claiming Standard Webhooks compliance.
+	// Real deliveries arrive without webhook-id / webhook-signature headers.
+	// Set RequireSignature=false to accept these, paying the cost in security
+	// (compensating with CF rate limits / WAF rules at the edge).
 	Secret string
+	// RequireSignature gates signature verification. Default true (strict).
+	// Set false to accept unsigned deliveries (e.g. TorBox today). The
+	// handler still does ownership lookup and origin gating; only the HMAC
+	// check is skipped.
+	RequireSignature bool
 	// ReplayWindow caps how far in the past/future a signed timestamp can be.
 	// Zero disables the check.
 	ReplayWindow time.Duration
@@ -106,10 +117,27 @@ func (s *Server) handleTorBoxWebhook(w http.ResponseWriter, r *http.Request) {
 	id := r.Header.Get(hdrWebhookID)
 	ts := r.Header.Get(hdrWebhookTimestamp)
 	sig := r.Header.Get(hdrWebhookSignature)
-	if err := torbox.VerifyWebhook(s.webhook.Secret, id, ts, sig, body, s.webhook.ReplayWindow, time.Now()); err != nil {
-		s.logger.Warn("webhook: signature verify failed", "err", err, "remote", r.RemoteAddr)
-		http.Error(w, "signature invalid", http.StatusUnauthorized)
-		return
+	if s.webhook.RequireSignature {
+		if err := torbox.VerifyWebhook(s.webhook.Secret, id, ts, sig, body, s.webhook.ReplayWindow, time.Now()); err != nil {
+			s.logger.Warn("webhook: signature verify failed",
+				"err", err, "remote", r.RemoteAddr,
+				"ua", r.Header.Get("User-Agent"),
+				"content_type", r.Header.Get("Content-Type"),
+				"body_len", len(body))
+			http.Error(w, "signature invalid", http.StatusUnauthorized)
+			return
+		}
+	} else {
+		// Insecure mode (TorBox today): accept unsigned. Log enough to detect
+		// abuse if we ever flip this back on, and to help characterize what
+		// the legitimate sender's traffic looks like for future hardening.
+		s.logger.Info("webhook: accepting unsigned (RequireSignature=false)",
+			"remote", r.RemoteAddr,
+			"ua", r.Header.Get("User-Agent"),
+			"content_type", r.Header.Get("Content-Type"),
+			"body_len", len(body),
+			"have_id", id != "",
+			"have_sig", sig != "")
 	}
 
 	var env torBoxWebhookEnvelope

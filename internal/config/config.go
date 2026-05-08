@@ -52,7 +52,12 @@ type Config struct {
 	// Empty secret => webhook handler returns 503. Setting this enables
 	// receiving completion events from TorBox without polling.
 	TorboxWebhookSecret string `env:"ARRARR_TORBOX_WEBHOOK_SECRET"`
-	WebhookReplayWindow time.Duration `env:"ARRARR_WEBHOOK_REPLAY_WINDOW" envDefault:"5m"`
+	// RequireWebhookSignature defaults to true (strict HMAC verification per
+	// Standard Webhooks). TorBox doesn't actually sign webhooks despite
+	// claiming compliance, so set this to false in homelab deployments
+	// targeting TorBox. Compensate with CF rate limit + WAF rules.
+	RequireWebhookSignature bool          `env:"ARRARR_TORBOX_WEBHOOK_REQUIRE_SIGNATURE" envDefault:"true"`
+	WebhookReplayWindow     time.Duration `env:"ARRARR_WEBHOOK_REPLAY_WINDOW" envDefault:"5m"`
 
 	// --- v2: pushover ---
 	PushoverToken    string `env:"ARRARR_PUSHOVER_TOKEN"`
