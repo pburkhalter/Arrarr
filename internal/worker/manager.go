@@ -50,7 +50,7 @@ type Options struct {
 
 	// InstanceName is included in TorBox tags as "host:<name>" so this Arrarr
 	// instance's downloads are distinguishable from other users / instances
-	// sharing the same TorBox account. See PLAN.md "Tagging strategy".
+	// sharing the same TorBox account.
 	InstanceName string
 
 	// --- v2 librarian ---

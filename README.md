@@ -179,6 +179,12 @@ TorBox account) get a clean `204` and no other side effects.
 Configure in TorBox: Settings → Webhooks → URL = your public Arrarr URL,
 secret = whatever you put in `ARRARR_TORBOX_WEBHOOK_SECRET`.
 
+> _TorBox today does not actually sign its webhook deliveries despite the
+> Standard Webhooks claim — there's no `Webhook-Id` / `Webhook-Signature`
+> header on real events. Set `ARRARR_TORBOX_WEBHOOK_REQUIRE_SIGNATURE=false`
+> to accept these. Compensate at the edge with a public reverse proxy that
+> rate-limits and (ideally) IP-restricts the path._
+
 ### 3. Pushover notifications
 
 Notify on `download.ready` (and optionally `download.failed`) but **only for
@@ -261,11 +267,12 @@ box only the four required v1 vars need to be set; v2 features stay off.
 | `ARRARR_STREAMING_URL_REFRESH_AFTER` | `5h` | how long after writing a STRM the URL is presumed valid |
 | **v2: webhook** | | |
 | `ARRARR_TORBOX_WEBHOOK_SECRET` | _(empty)_ | enables `<URL_BASE>/webhook`; empty → 503 |
+| `ARRARR_TORBOX_WEBHOOK_REQUIRE_SIGNATURE` | `true` | strict HMAC verify; set `false` to accept TorBox's currently-unsigned deliveries |
 | `ARRARR_WEBHOOK_REPLAY_WINDOW` | `5m` | Standard Webhooks timestamp tolerance |
 | **v2: Pushover** | | |
 | `ARRARR_PUSHOVER_TOKEN` | _(empty)_ | Pushover application token |
 | `ARRARR_PUSHOVER_USER` | _(empty)_ | Pushover user/group key |
-| `ARRARR_PUSHOVER_NOTIFY_ON` | `ready` | `off` / `ready` / `failed` / `both` |
+| `ARRARR_PUSHOVER_NOTIFY_ON` | `off` | `off` / `ready` / `failed` / `both` |
 | **v2: mirror mode** | | |
 | `ARRARR_MIRROR_MODE` | `off` | `off` / `on` |
 | `ARRARR_MIRROR_POLL_INTERVAL` | `10m` | mylist sweep cadence |
@@ -367,8 +374,6 @@ Integration tests in [`internal/worker/integration_test.go`](internal/worker/int
 [`internal/worker/mirror_test.go`](internal/worker/mirror_test.go) drive jobs
 all the way from `NEW` through library write against fakes, in well under a
 second each.
-
-The full v2 design lives in [`PLAN.md`](PLAN.md).
 
 ## Limitations & out of scope
 
