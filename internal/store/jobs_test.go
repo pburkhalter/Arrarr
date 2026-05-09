@@ -152,3 +152,71 @@ func TestReap(t *testing.T) {
 
 func strP(s string) *string  { return &s }
 func timeP(t time.Time) *time.Time { return &t }
+
+func TestFetchStatsHidesFailedMirror(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Two healthy mirror jobs (READY) — should appear in Recent.
+	for _, id := range []int64{100, 200} {
+		if _, _, err := s.UpsertMirrorJob(ctx, MirrorJobSpec{
+			TorboxID: id, FolderName: "good." + string(rune('A'+id%26)), Category: "movies",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Three broken mirror jobs (FAILED via librarian terminal failure) — should
+	// be EXCLUDED from Recent but counted in HiddenFailedMirror.
+	for _, id := range []int64{300, 400, 500} {
+		nzoID, _, err := s.UpsertMirrorJob(ctx, MirrorJobSpec{
+			TorboxID: id, FolderName: "broken", Category: "movies",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.MarkLibraryFailed(ctx, nzoID, "torbox 500: DATABASE_ERROR", nil, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One self-origin FAILED job — should still appear (we only hide mirror failures).
+	j := newJob("arrarr_self_fail")
+	if err := s.Insert(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transition(ctx, j.NzoID, Transition{
+		From:      job.StateNew,
+		To:        job.StateFailed,
+		LastError: strP("submit fail"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := s.FetchStats(ctx, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.HiddenFailedMirror != 3 {
+		t.Errorf("HiddenFailedMirror = %d, want 3", stats.HiddenFailedMirror)
+	}
+	for _, r := range stats.Recent {
+		if r.State == "FAILED" && r.Origin == "mirror" {
+			t.Errorf("recent contains hidden row: nzo_id=%s", r.NzoID)
+		}
+	}
+	// Spot-check that the self FAILED + the 2 healthy mirrors did make it.
+	wantPresent := map[string]bool{
+		"arrarr_self_fail": false,
+		"mirror_100":       false,
+		"mirror_200":       false,
+	}
+	for _, r := range stats.Recent {
+		if _, ok := wantPresent[r.NzoID]; ok {
+			wantPresent[r.NzoID] = true
+		}
+	}
+	for id, ok := range wantPresent {
+		if !ok {
+			t.Errorf("recent missing %s", id)
+		}
+	}
+}

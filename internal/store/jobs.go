@@ -455,6 +455,11 @@ type Stats struct {
 	LibraryStateCounts map[string]int
 	OriginCounts       map[string]int
 	Recent             []*RecentJob
+	// HiddenFailedMirror is the count of FAILED+origin=mirror jobs excluded
+	// from Recent. They're nearly always TorBox-side errors on stale items in
+	// the shared account (DATABASE_ERROR / 500 on requestdl) — actionable by
+	// nobody, so we suppress them from the table and surface only the count.
+	HiddenFailedMirror int
 	UntaggedCount      int
 	UpcomingRefreshes  int
 	GeneratedAt        time.Time
@@ -555,6 +560,12 @@ func (s *Store) FetchStats(ctx context.Context, recentLimit int) (*Stats, error)
 		return nil, err
 	}
 
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM jobs WHERE state='FAILED' AND origin='mirror'`).
+		Scan(&out.HiddenFailedMirror); err != nil {
+		return nil, err
+	}
+
 	rows, err = s.db.QueryContext(ctx, `
 		SELECT nzo_id, state, origin, category,
 		       COALESCE(torbox_folder_name, ''),
@@ -563,6 +574,7 @@ func (s *Store) FetchStats(ctx context.Context, recentLimit int) (*Stats, error)
 		       COALESCE(last_error, ''),
 		       updated_at, streaming_url_expires_at
 		FROM jobs
+		WHERE NOT (state='FAILED' AND origin='mirror')
 		ORDER BY updated_at DESC
 		LIMIT ?`, recentLimit)
 	if err != nil {
