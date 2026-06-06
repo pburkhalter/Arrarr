@@ -46,6 +46,18 @@ func (m *Manager) librarianLoop(ctx context.Context) {
 	}
 }
 
+// librarianBatch carries tick-scoped state so we avoid re-fetching the full
+// TorBox MyList for every single row in a single tick. The list is large and
+// the API call is slow; caching it for a tick collapses N API calls to 1.
+//
+// needURLs flips off the per-file RequestUsenetDL roundtrip when the configured
+// writer is symlink-only (webdav) — symlinks don't carry streaming URLs, so
+// fetching them is pure overhead. STRM/both modes still need them.
+type librarianBatch struct {
+	needURLs bool
+	mylist   []torbox.MyListItem // nil = fall back to per-entry MyList fetch
+}
+
 func (m *Manager) librarianTick(ctx context.Context) {
 	// Empty origin = all origins. Mirror rows (origin='mirror') get the same
 	// library treatment as self rows; the only origin-aware logic lives in the
@@ -55,8 +67,23 @@ func (m *Manager) librarianTick(ctx context.Context) {
 		m.log.Error("librarian: list failed", "err", err)
 		return
 	}
+	if len(rows) == 0 {
+		return
+	}
+	// Cache MyList for the whole tick so all rows in this batch share one
+	// roundtrip instead of N. Best-effort: on fetch failure we fall back to
+	// per-row fetches (preserving previous behavior).
+	batch := &librarianBatch{
+		needURLs: writerNeedsURLRefresh(m.o.Librarian.Mode()),
+	}
+	if items, mlErr := m.o.Torbox.MyList(ctx, true); mlErr == nil {
+		batch.mylist = items
+	} else {
+		m.log.Warn("librarian: batch MyList failed, falling back to per-row",
+			"err", describe(mlErr))
+	}
 	for _, r := range rows {
-		m.libraryOne(ctx, r)
+		m.libraryOne(ctx, r, batch)
 	}
 }
 
@@ -64,8 +91,8 @@ func (m *Manager) librarianTick(ctx context.Context) {
 // Writer.Write. On success, transitions the job to READY and persists the
 // streaming URL + expiry. On failure, schedules a retry or fails the job
 // after MaxLibraryAttempts.
-func (m *Manager) libraryOne(ctx context.Context, lr *libraryRow) {
-	libPath, primaryURL, expires, err := m.buildAndWriteLibraryEntry(ctx, lr)
+func (m *Manager) libraryOne(ctx context.Context, lr *libraryRow, batch *librarianBatch) {
+	libPath, primaryURL, expires, err := m.buildAndWriteLibraryEntry(ctx, lr, batch)
 	if err != nil {
 		m.scheduleLibraryRetry(ctx, lr, err)
 		return
@@ -96,7 +123,7 @@ func (m *Manager) libraryOne(ctx context.Context, lr *libraryRow) {
 //
 // On any TorBox error the caller decides retry semantics — this function
 // surfaces a plain error.
-func (m *Manager) buildAndWriteLibraryEntry(ctx context.Context, lr *libraryRow) (libPath, primaryURL string, expires time.Time, err error) {
+func (m *Manager) buildAndWriteLibraryEntry(ctx context.Context, lr *libraryRow, batch *librarianBatch) (libPath, primaryURL string, expires time.Time, err error) {
 	id := pickID(lr)
 	if id == 0 {
 		err = errors.New("no torbox id yet")
@@ -106,22 +133,26 @@ func (m *Manager) buildAndWriteLibraryEntry(ctx context.Context, lr *libraryRow)
 		err = errors.New("no folder name yet")
 		return
 	}
-	files, err := m.fetchTorboxFiles(ctx, id)
+	files, err := m.fetchTorboxFiles(ctx, id, batch)
 	if err != nil {
 		return
 	}
 
 	// Per-file streaming URLs. STRM mode requires them; symlink mode tolerates
-	// missing URLs (the writer ignores them).
+	// missing URLs (the writer ignores them). batch=nil (urlRefreshOne path)
+	// always needs URLs since that path only runs in STRM/both mode.
 	urls := map[int64]string{}
 	expires = time.Now().Add(m.o.StreamingURLRefreshAfter)
-	for _, f := range files {
-		var u string
-		u, err = m.o.Torbox.RequestUsenetDL(ctx, id, f.ID, false)
-		if err != nil {
-			return
+	needURLs := batch == nil || batch.needURLs
+	if needURLs {
+		for _, f := range files {
+			var u string
+			u, err = m.o.Torbox.RequestUsenetDL(ctx, id, f.ID, false)
+			if err != nil {
+				return
+			}
+			urls[f.ID] = u
 		}
-		urls[f.ID] = u
 	}
 
 	canonical := m.tryParseCanonical(ctx, lr.Category, lr.TorboxFolderName.String)
@@ -157,10 +188,19 @@ func pickID(lr *libraryRow) int64 {
 // the same /usenet/mylist endpoint the poller uses, server-side filtered by id.
 // (TorBox supports id= as a query param; some clients ignore it but our
 // torbox.Client will send it via MyList(true) where true forces bypass-cache.)
-func (m *Manager) fetchTorboxFiles(ctx context.Context, id int64) ([]librarian.FileInfo, error) {
-	items, err := m.o.Torbox.MyList(ctx, true)
-	if err != nil {
-		return nil, err
+//
+// If batch.mylist is set, reuse it instead of hitting TorBox — the librarian
+// tick pre-fetches once and shares across all rows in the batch.
+func (m *Manager) fetchTorboxFiles(ctx context.Context, id int64, batch *librarianBatch) ([]librarian.FileInfo, error) {
+	var items []torbox.MyListItem
+	if batch != nil && batch.mylist != nil {
+		items = batch.mylist
+	} else {
+		var err error
+		items, err = m.o.Torbox.MyList(ctx, true)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var matched *torbox.MyListItem
 	for i := range items {
@@ -316,7 +356,9 @@ func (m *Manager) urlRefreshTick(ctx context.Context) {
 // TorBox is briefly unavailable we just log and try again next tick — the
 // existing STRM keeps working until its actual TTL elapses.
 func (m *Manager) urlRefreshOne(ctx context.Context, lr *libraryRow) {
-	libPath, primaryURL, expires, err := m.buildAndWriteLibraryEntry(ctx, lr)
+	// batch=nil → buildAndWriteLibraryEntry treats it as "always need URLs" +
+	// per-row MyList fetch, preserving the existing refresh-loop behavior.
+	libPath, primaryURL, expires, err := m.buildAndWriteLibraryEntry(ctx, lr, nil)
 	if err != nil {
 		m.log.Warn("urlrefresh: skip (will retry)",
 			"nzo_id", lr.NzoID, "err", describe(err))
