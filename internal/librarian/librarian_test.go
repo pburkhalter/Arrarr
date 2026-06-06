@@ -229,6 +229,74 @@ func TestSymlinkWriterCreatesRelativeLink(t *testing.T) {
 	}
 }
 
+// TestSymlinkWriterHandlesReleasePrefixedNames exercises the bug where TorBox
+// returns f.Name with the release name already as the first path component
+// (e.g. "Rick.S09E01/file.mkv"). Pre-fix the writer concatenated MountBase +
+// ReleaseName + Name → double release-name in the target. Now the writer
+// strips any leading "<ReleaseName>/" before prepending, idempotent for all
+// three shapes: flat name, release-prefixed name, release/episodeDir name.
+func TestSymlinkWriterHandlesReleasePrefixedNames(t *testing.T) {
+	cases := []struct {
+		desc         string
+		releaseName  string
+		fileName     string // what TorBox returns as f.Name
+		srcRelPath   string // path of real file relative to mountBase
+	}{
+		{
+			desc:        "name without release prefix (flat)",
+			releaseName: "RelName",
+			fileName:    "ep.mkv",
+			srcRelPath:  "RelName/ep.mkv",
+		},
+		{
+			desc:        "name with release prefix (single-episode shape)",
+			releaseName: "RelName",
+			fileName:    "RelName/ep.mkv",
+			srcRelPath:  "RelName/ep.mkv",
+		},
+		{
+			desc:        "name with release prefix + episode subdir (season pack shape)",
+			releaseName: "RelName.S01",
+			fileName:    "RelName.S01/RelName.S01E01/ep.mkv",
+			srcRelPath:  "RelName.S01/RelName.S01E01/ep.mkv",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			libBase := t.TempDir()
+			mountBase := t.TempDir()
+			srcAbs := filepath.Join(mountBase, tc.srcRelPath)
+			if err := os.MkdirAll(filepath.Dir(srcAbs), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(srcAbs, []byte("\x00\x00"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			w, _ := New("webdav", libBase, mountBase)
+			item := Item{
+				NzoID:       "arrarr_p",
+				Category:    "sonarr",
+				ReleaseName: tc.releaseName,
+				Files:       []FileInfo{{ID: 1, Name: tc.fileName, ShortName: filepath.Base(tc.fileName)}},
+				MountBase:   mountBase,
+			}
+			got, err := w.Write(context.Background(), item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := filepath.EvalSymlinks(got)
+			if err != nil {
+				t.Fatalf("symlink should resolve, got error: %v", err)
+			}
+			wantResolved, _ := filepath.EvalSymlinks(srcAbs)
+			if resolved != wantResolved {
+				t.Errorf("symlink resolved to %q, want %q", resolved, wantResolved)
+			}
+		})
+	}
+}
+
 func TestSymlinkWriterIsIdempotent(t *testing.T) {
 	libBase := t.TempDir()
 	mountBase := t.TempDir()

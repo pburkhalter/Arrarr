@@ -160,7 +160,15 @@ func (w *SymlinkWriter) Write(_ context.Context, item Item) (string, error) {
 	for _, e := range entries {
 		dst := filepath.Join(w.Base, e.RelPath+e.ExtFromSource())
 		// Source absolute path for the file inside the WebDAV mount.
-		srcAbs := filepath.Join(w.MountBase, item.ReleaseName, e.SourceName)
+		// TorBox's file.Name can come in three shapes:
+		//   1. "<Release>/<file>"           — single-episode release
+		//   2. "<Release>/<EpisodeDir>/<f>" — season pack with per-episode subdirs
+		//   3. "<file>"                     — flat (no release-prefixed dir in name)
+		// In all three cases the file lives under <MountBase>/<Release>/...,
+		// so we strip any leading "<Release>/" then unconditionally prepend it.
+		// This is idempotent and works for all observed shapes.
+		sourcePath := strings.TrimPrefix(e.SourceName, item.ReleaseName+"/")
+		srcAbs := filepath.Join(w.MountBase, item.ReleaseName, sourcePath)
 		// Make it relative to dst's directory so the library tree stays
 		// relocatable (if you move /library, the symlinks still resolve as long
 		// as MountBase is reachable from the new location).
