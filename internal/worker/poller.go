@@ -33,40 +33,46 @@ func (m *Manager) pollOnce(ctx context.Context) {
 	if len(inflight) == 0 {
 		return
 	}
-	items, err := m.o.Torbox.MyList(ctx, true)
+
+	usenetItems, err := m.o.Torbox.MyList(ctx, true)
 	if err != nil {
-		m.log.Error("poll: mylist failed", "err", describe(err))
+		m.log.Error("poll: mylist (usenet) failed", "err", describe(err))
 		return
 	}
-
-	// Index by both ids — TorBox swaps queue_id for id mid-flight.
-	byID := make(map[int64]*torbox.MyListItem, len(items)*2)
-	for i := range items {
-		it := &items[i]
-		if it.ID != 0 {
-			byID[it.ID] = it
-		}
-		if it.QueueID != 0 {
-			byID[it.QueueID] = it
-		}
+	torrentItems, terr := m.o.Torbox.MyListTorrents(ctx, true)
+	if terr != nil {
+		// soft-fail — usenet polling still works without torrent visibility
+		m.log.Warn("poll: mylist (torrents) failed", "err", describe(terr))
 	}
 
+	usenetByID := indexByID(usenetItems)
+	torrentByID := indexByID(torrentItems)
+
 	for _, j := range inflight {
+		var pool []torbox.MyListItem
+		var idx map[int64]*torbox.MyListItem
+		switch j.Source {
+		case "torrent":
+			pool, idx = torrentItems, torrentByID
+		default:
+			pool, idx = usenetItems, usenetByID
+		}
+
 		var item *torbox.MyListItem
 		if j.TorboxActiveID.Valid {
-			item = byID[j.TorboxActiveID.Int64]
+			item = idx[j.TorboxActiveID.Int64]
 		}
 		if item == nil && j.TorboxQueueID.Valid {
-			item = byID[j.TorboxQueueID.Int64]
+			item = idx[j.TorboxQueueID.Int64]
 		}
 		// Fallback: when the submit response had 0/0 ids (TorBox returned a
 		// duplicate-style response without ids), match by name. TorBox's
 		// `name` field is the folder name, which equals filename minus .nzb.
 		if item == nil {
 			searchName := strings.TrimSuffix(j.Filename, ".nzb")
-			for i := range items {
-				if items[i].Name == searchName {
-					item = &items[i]
+			for i := range pool {
+				if pool[i].Name == searchName {
+					item = &pool[i]
 					break
 				}
 			}
@@ -77,6 +83,20 @@ func (m *Manager) pollOnce(ctx context.Context) {
 		}
 		m.applyMyListItem(ctx, j, item)
 	}
+}
+
+func indexByID(items []torbox.MyListItem) map[int64]*torbox.MyListItem {
+	out := make(map[int64]*torbox.MyListItem, len(items)*2)
+	for i := range items {
+		it := &items[i]
+		if it.ID != 0 {
+			out[it.ID] = it
+		}
+		if it.QueueID != 0 {
+			out[it.QueueID] = it
+		}
+	}
+	return out
 }
 
 func (m *Manager) applyMyListItem(ctx context.Context, j *job.Job, it *torbox.MyListItem) {

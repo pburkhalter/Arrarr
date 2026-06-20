@@ -10,12 +10,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/pburkhalter/arrarr/internal/arrclient"
 	"github.com/pburkhalter/arrarr/internal/config"
+	"github.com/pburkhalter/arrarr/internal/downloader"
 	"github.com/pburkhalter/arrarr/internal/librarian"
 	"github.com/pburkhalter/arrarr/internal/logger"
 	"github.com/pburkhalter/arrarr/internal/pathmap"
 	"github.com/pburkhalter/arrarr/internal/pushover"
+	"github.com/pburkhalter/arrarr/internal/qbit"
 	"github.com/pburkhalter/arrarr/internal/sab"
 	"github.com/pburkhalter/arrarr/internal/store"
 	"github.com/pburkhalter/arrarr/internal/torbox"
@@ -192,6 +196,31 @@ func run() error {
 		},
 	})
 
+	// v3 puller: pulls completed TorBox items to local DownloadDir so Sonarr/
+	// Radarr's import path is a normal local file. Replaces the v2 STRM/symlink
+	// writer when LibraryMode=download.
+	var puller *worker.Puller
+	if cfg.PullerEnabled() {
+		dl, derr := downloader.New(downloader.Options{
+			BaseDir:     cfg.DownloadDir,
+			Concurrency: cfg.DownloadConcurrency,
+			Logger:      log.With("component", "downloader"),
+		})
+		if derr != nil {
+			return fmt.Errorf("downloader: %w", derr)
+		}
+		puller = worker.NewPuller(worker.PullerOptions{
+			Store:      st,
+			Torbox:     tb,
+			Downloader: dl,
+			BaseDir:    cfg.DownloadDir,
+			Logger:     log.With("component", "puller"),
+		})
+		log.Info("puller enabled (LibraryMode=download)",
+			"download_dir", cfg.DownloadDir,
+			"concurrency", cfg.DownloadConcurrency)
+	}
+
 	wm := worker.New(worker.Options{
 		Store:                    st,
 		Torbox:                   tb,
@@ -213,15 +242,40 @@ func run() error {
 		ArrCallbackTimeout:       cfg.ArrCallbackTimeout,
 		MirrorEnabled:            cfg.MirrorEnabled(),
 		MirrorPollInterval:       cfg.MirrorPollInterval,
+		Puller:                   puller,
 	})
 	if cfg.MirrorEnabled() {
 		log.Info("mirror mode enabled — TorBox account-wide downloads will populate /library",
 			"poll_interval", cfg.MirrorPollInterval)
 	}
 
+	// Top-level mux. Sab serves under cfg.URLBase ("/sabnzbd"); qbit shim is
+	// mounted at "/" when enabled, so Sonarr/Radarr can hit `/api/v2/...` on
+	// the same listener. Health probe stays under sab's URLBase (unchanged).
+	root := chi.NewRouter()
+	root.Mount(cfg.URLBase+"/", http.StripPrefix(cfg.URLBase, srv.Handler()))
+	root.Mount("/", srv.Handler()) // sab also handles /webhook + /healthz at root
+
+	if cfg.QbitEnabled() {
+		qbitSrv := qbit.NewServer(qbit.Options{
+			Username:        cfg.QbitUsername,
+			Password:        cfg.QbitPassword,
+			URLBase:         cfg.QbitURLBase,
+			DownloadDir:     cfg.DownloadDir,
+			MaxTorrentBytes: cfg.MaxTorrentBytes,
+			Store:           qbit.Adapt(st),
+			Wake:            wakeCh,
+			Logger:          log.With("component", "qbit"),
+		})
+		// Mount the qbit handler. URLBase is included by the qbit Handler() itself,
+		// so we mount at root and let chi de-multiplex on path.
+		root.Mount("/", qbitSrv.Handler())
+		log.Info("qbit shim enabled", "url_base", cfg.QbitURLBase, "max_torrent_bytes", cfg.MaxTorrentBytes)
+	}
+
 	g, ctx := errgroup.WithContext(rootCtx)
 	g.Go(func() error {
-		return sab.Run(ctx, cfg.Listen, srv.Handler(), log.With("component", "http"))
+		return sab.Run(ctx, cfg.Listen, root, log.With("component", "http"))
 	})
 	g.Go(func() error {
 		return wm.Run(ctx)

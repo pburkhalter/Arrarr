@@ -48,6 +48,20 @@ type Config struct {
 	LibraryMode              string        `env:"ARRARR_LIBRARY_MODE" envDefault:"strm"`
 	StreamingURLRefreshAfter time.Duration `env:"ARRARR_STREAMING_URL_REFRESH_AFTER" envDefault:"5h"`
 
+	// --- v3: downloader + qbit shim ---
+	// LibraryMode=download disables the v2 STRM/symlink writer and instead
+	// pulls completed TorBox items to DownloadDir locally. Sonarr/Radarr
+	// import from those paths via the qbit/sab shim.
+	DownloadDir         string `env:"ARRARR_DOWNLOAD_DIR" envDefault:"/downloads"`
+	DownloadConcurrency int    `env:"ARRARR_DOWNLOAD_CONCURRENCY" envDefault:"4"`
+	// QbitURLBase mounts the qBittorrent v2 shim under a path prefix. Empty
+	// means root — qBittorrent itself is conventionally rootless so this is
+	// the recommended setting.
+	QbitURLBase     string `env:"ARRARR_QBIT_URL_BASE"`
+	QbitUsername    string `env:"ARRARR_QBIT_USERNAME" envDefault:"admin"`
+	QbitPassword    string `env:"ARRARR_QBIT_PASSWORD"`
+	MaxTorrentBytes int64  `env:"ARRARR_MAX_TORRENT_BYTES" envDefault:"4194304"`
+
 	// --- v2: webhook ---
 	// Empty secret => webhook handler returns 503. Setting this enables
 	// receiving completion events from TorBox without polling.
@@ -77,7 +91,10 @@ type Config struct {
 }
 
 // LibraryModeValues are the legal values for ARRARR_LIBRARY_MODE.
-var LibraryModeValues = map[string]bool{"strm": true, "webdav": true, "both": true, "off": true}
+//   strm/webdav/both — v2 STRM/symlink writer
+//   download         — v3 puller: copy bytes to ARRARR_DOWNLOAD_DIR
+//   off              — neither runs (verifier owns COMPLETED_TORBOX→READY by file-exists check)
+var LibraryModeValues = map[string]bool{"strm": true, "webdav": true, "both": true, "download": true, "off": true}
 
 // PushoverNotifyValues are the legal values for ARRARR_PUSHOVER_NOTIFY_ON.
 var PushoverNotifyValues = map[string]bool{"off": true, "ready": true, "failed": true, "both": true}
@@ -117,7 +134,36 @@ func Load() (*Config, error) {
 	if c.InstanceName == "" {
 		return nil, fmt.Errorf("ARRARR_INSTANCE_NAME must not be empty")
 	}
+	c.DownloadDir = strings.TrimRight(c.DownloadDir, "/")
+	c.QbitURLBase = "/" + strings.Trim(c.QbitURLBase, "/")
+	if c.QbitURLBase == "/" {
+		c.QbitURLBase = ""
+	}
+	if c.LibraryMode == "download" {
+		if c.DownloadDir == "" {
+			return nil, fmt.Errorf("ARRARR_LIBRARY_MODE=download requires ARRARR_DOWNLOAD_DIR")
+		}
+		if c.DownloadConcurrency < 1 {
+			return nil, fmt.Errorf("ARRARR_DOWNLOAD_CONCURRENCY must be >= 1 when LibraryMode=download")
+		}
+	}
+	if c.QbitEnabled() && c.QbitPassword == "" {
+		return nil, fmt.Errorf("ARRARR_QBIT_USERNAME set without ARRARR_QBIT_PASSWORD")
+	}
 	return c, nil
+}
+
+// QbitEnabled reports whether the qBittorrent v2 shim should serve. Treated as
+// enabled when the user has set credentials — Sonarr/Radarr won't authenticate
+// without them anyway, so absent credentials = absent qbit endpoint.
+func (c *Config) QbitEnabled() bool {
+	return c.QbitUsername != "" && c.QbitPassword != ""
+}
+
+// PullerEnabled reports whether the v3 puller loop should run. Requires
+// LibraryMode=download AND a configured DownloadDir.
+func (c *Config) PullerEnabled() bool {
+	return c.LibraryMode == "download" && c.DownloadDir != ""
 }
 
 // PushoverEnabled reports whether Pushover notifications are configured to fire

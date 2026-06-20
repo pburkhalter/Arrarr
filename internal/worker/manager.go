@@ -32,6 +32,13 @@ type torboxClient interface {
 	ControlUsenet(ctx context.Context, id int64, op string) error
 	EditUsenet(ctx context.Context, id int64, p torbox.EditUsenetParams) error
 	RequestUsenetDL(ctx context.Context, usenetID, fileID int64, zipLink bool) (string, error)
+
+	// v3 torrent endpoints.
+	CreateTorrentFromFile(ctx context.Context, filename string, torrentBlob []byte, p torbox.CreateTorrentParams) (*torbox.CreateResp, error)
+	CreateTorrentFromMagnet(ctx context.Context, magnet string, p torbox.CreateTorrentParams) (*torbox.CreateResp, error)
+	MyListTorrents(ctx context.Context, bypassCache bool) ([]torbox.MyListItem, error)
+	RequestTorrentDL(ctx context.Context, torrentID, fileID int64, zipLink bool) (string, error)
+	ControlTorrent(ctx context.Context, id int64, op string) error
 }
 
 type Options struct {
@@ -82,11 +89,20 @@ type Options struct {
 	// gated to origin='self' (so other users' downloads don't generate noise).
 	MirrorEnabled      bool
 	MirrorPollInterval time.Duration
+
+	// --- v3 puller ---
+	// When Puller is non-nil, COMPLETED_TORBOX jobs without a library_path are
+	// handled by the puller: download files from TorBox CDN to local disk,
+	// then transition to READY. The qbit and sab shims report the local_path
+	// as the import-from path for Sonarr/Radarr. PullEvery controls the loop
+	// cadence; defaults to 15s.
+	Puller    *Puller
+	PullEvery time.Duration
 }
 
 type Manager struct {
-	o    Options
-	log  *slog.Logger
+	o   Options
+	log *slog.Logger
 }
 
 func New(o Options) *Manager {
@@ -117,6 +133,9 @@ func New(o Options) *Manager {
 	if o.StreamingURLRefreshAfter == 0 {
 		o.StreamingURLRefreshAfter = 5 * time.Hour
 	}
+	if o.PullEvery == 0 {
+		o.PullEvery = 15 * time.Second
+	}
 	return &Manager{o: o, log: o.Logger}
 }
 
@@ -131,6 +150,9 @@ func (m *Manager) Run(ctx context.Context) error {
 		m.taggerRetryLoop,
 		m.mirrorLoop,
 		m.reaperLoop,
+	}
+	if m.o.Puller != nil {
+		loops = append(loops, m.pullerLoop)
 	}
 	for _, fn := range loops {
 		wg.Add(1)

@@ -15,14 +15,55 @@ var ErrNotFound = errors.New("job not found")
 var ErrInvalidTransition = errors.New("invalid state transition")
 
 func (s *Store) Insert(ctx context.Context, j *job.Job) error {
+	source := j.Source
+	if source == "" {
+		source = "usenet"
+	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs(
 		nzo_id, category, filename, nzb_sha256, nzb_blob, size_bytes, priority,
-		state, attempts, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		state, attempts, source, magnet, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		j.NzoID, j.Category, j.Filename, j.NzbSHA256, j.NzbBlob, j.SizeBytes, j.Priority,
-		string(j.State),
+		string(j.State), source, j.Magnet,
 	)
 	return err
+}
+
+// SetLocalProgress updates per-file pull progress without changing state. Cheap
+// enough to call from the downloader's OnProgress callback every few seconds.
+func (s *Store) SetLocalProgress(ctx context.Context, nzoID string, downloaded, total int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET
+		bytes_downloaded = ?, bytes_total = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE nzo_id = ?`, downloaded, total, nzoID)
+	return err
+}
+
+// MarkLocalReady records the puller's successful local copy and advances the
+// job to READY. The path goes into local_path (v3) and also library_path so
+// existing readers (sab history, qbit content_path) pick it up without changes.
+func (s *Store) MarkLocalReady(ctx context.Context, nzoID, localPath string, bytesTotal int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET
+		local_path = ?, library_path = ?, bytes_downloaded = ?, bytes_total = ?,
+		updated_at = CURRENT_TIMESTAMP WHERE nzo_id = ?`,
+		localPath, localPath, bytesTotal, bytesTotal, nzoID); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE jobs SET
+		state = 'READY', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+		next_attempt_at = NULL, last_error = NULL, nzb_blob = NULL, claimed_at = NULL
+		WHERE nzo_id = ? AND state = 'COMPLETED_TORBOX'`, nzoID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrInvalidTransition
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Get(ctx context.Context, nzoID string) (*job.Job, error) {
@@ -816,7 +857,8 @@ func (s *Store) Reap(ctx context.Context, before time.Time) (int64, error) {
 
 const jobColsList = `nzo_id, category, filename, nzb_sha256, nzb_blob, size_bytes, priority,
 	torbox_queue_id, torbox_active_id, torbox_folder_name, state, attempts, last_error,
-	claimed_at, next_attempt_at, created_at, updated_at, completed_at, library_path`
+	claimed_at, next_attempt_at, created_at, updated_at, completed_at, library_path,
+	source, magnet, local_path, bytes_downloaded, bytes_total`
 
 const jobSelectCols = `SELECT ` + jobColsList + ` FROM jobs`
 
@@ -831,6 +873,7 @@ func scanJob(r rowScanner) (*job.Job, error) {
 		&j.NzoID, &j.Category, &j.Filename, &j.NzbSHA256, &j.NzbBlob, &j.SizeBytes, &j.Priority,
 		&j.TorboxQueueID, &j.TorboxActiveID, &j.TorboxFolderName, &state, &j.Attempts, &j.LastError,
 		&j.ClaimedAt, &j.NextAttemptAt, &j.CreatedAt, &j.UpdatedAt, &j.CompletedAt, &j.LibraryPath,
+		&j.Source, &j.Magnet, &j.LocalPath, &j.BytesDownloaded, &j.BytesTotal,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

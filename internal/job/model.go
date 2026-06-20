@@ -44,6 +44,29 @@ type Job struct {
 	// copy, no move). When unset, the v1 fallback (pathMap-translated TorBox
 	// folder) is used.
 	LibraryPath sql.NullString
+
+	// --- v3: torrent + local-download support ---
+	// Source distinguishes which TorBox API the submitter calls
+	// (CreateUsenetDownload vs CreateTorrentFromFile/Magnet) and which mylist
+	// endpoint the poller queries. "" is treated as "usenet" for backward compat.
+	Source string
+
+	// Magnet holds the original magnet URI for torrent jobs submitted that way.
+	// Used by the submitter to re-call CreateTorrentFromMagnet on retry without
+	// keeping a .torrent blob around. Empty for usenet jobs and for torrent
+	// jobs that came in as a .torrent file (those use NzbBlob).
+	Magnet sql.NullString
+
+	// LocalPath is the absolute directory under DOWNLOAD_DIR where the puller
+	// wrote the files for this job. Distinct from LibraryPath so the v2
+	// librarian (STRM/symlink) and v3 downloader can coexist during transition.
+	LocalPath sql.NullString
+
+	// BytesDownloaded/BytesTotal are puller progress, surfaced via the qbit
+	// shim's torrents/info so Sonarr/Radarr's UI progress reflects the local
+	// pull rather than just TorBox's cloud download.
+	BytesDownloaded int64
+	BytesTotal      int64
 }
 
 func (j *Job) EffectiveTorboxID() int64 {
