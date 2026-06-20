@@ -69,6 +69,16 @@ func (m *Manager) submitOne(ctx context.Context, j *job.Job) {
 	}
 	queueID := resp.QueueID
 	activeID := resp.ID
+	// TorBox /torrents/createtorrent returns torrent_id (not id/queue_id);
+	// /usenet/createusenetdownload may also return usenet_id on duplicates.
+	// Treat any non-zero "operational" id as activeID so the poller can match.
+	if activeID == 0 {
+		if resp.TorrentID != 0 {
+			activeID = resp.TorrentID
+		} else if resp.UsenetID != 0 {
+			activeID = resp.UsenetID
+		}
+	}
 	// 0/0 means TorBox accepted upload but returned a "duplicate"-style response
 	// without ids (often after a previous timeout where the NZB was still
 	// processed server-side). Don't transition to SUBMITTED — the poller would

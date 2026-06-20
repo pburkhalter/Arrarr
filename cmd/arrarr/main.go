@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
+	"strings"
 
 	"github.com/pburkhalter/arrarr/internal/arrclient"
 	"github.com/pburkhalter/arrarr/internal/config"
@@ -128,9 +128,10 @@ func run() error {
 
 	// v2 librarian: structured /library tree writer (STRM, symlink, or both).
 	// Mode "off" returns a no-op writer so the v1 verifier path stays in charge
-	// of COMPLETED_TORBOX → READY.
+	// of COMPLETED_TORBOX → READY. Mode "download" (v3) skips the librarian
+	// entirely — the puller handles COMPLETED_TORBOX → READY instead.
 	var libWriter librarian.Writer
-	if cfg.LibraryEnabled() {
+	if cfg.LibraryEnabled() && cfg.LibraryMode != "download" {
 		libWriter, err = librarian.New(cfg.LibraryMode, cfg.LibraryBase, cfg.LocalVerifyBase)
 		if err != nil {
 			return fmt.Errorf("librarian: %w", err)
@@ -249,13 +250,12 @@ func run() error {
 			"poll_interval", cfg.MirrorPollInterval)
 	}
 
-	// Top-level mux. Sab serves under cfg.URLBase ("/sabnzbd"); qbit shim is
-	// mounted at "/" when enabled, so Sonarr/Radarr can hit `/api/v2/...` on
-	// the same listener. Health probe stays under sab's URLBase (unchanged).
-	root := chi.NewRouter()
-	root.Mount(cfg.URLBase+"/", http.StripPrefix(cfg.URLBase, srv.Handler()))
-	root.Mount("/", srv.Handler()) // sab also handles /webhook + /healthz at root
-
+	// Multiplex sab + qbit on one listener. sab.Handler() already routes
+	// /sabnzbd/* AND /webhook + /healthz at root; qbit.Handler() routes
+	// /api/v2/*. We can't chi.Mount both at "/" — instead use a tiny path
+	// dispatch.
+	sabHandler := srv.Handler()
+	var root http.Handler = sabHandler
 	if cfg.QbitEnabled() {
 		qbitSrv := qbit.NewServer(qbit.Options{
 			Username:        cfg.QbitUsername,
@@ -267,9 +267,14 @@ func run() error {
 			Wake:            wakeCh,
 			Logger:          log.With("component", "qbit"),
 		})
-		// Mount the qbit handler. URLBase is included by the qbit Handler() itself,
-		// so we mount at root and let chi de-multiplex on path.
-		root.Mount("/", qbitSrv.Handler())
+		qbitHandler := qbitSrv.Handler()
+		root = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/api/v2/") || r.URL.Path == "/api/v2" {
+				qbitHandler.ServeHTTP(w, r)
+				return
+			}
+			sabHandler.ServeHTTP(w, r)
+		})
 		log.Info("qbit shim enabled", "url_base", cfg.QbitURLBase, "max_torrent_bytes", cfg.MaxTorrentBytes)
 	}
 

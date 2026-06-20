@@ -144,15 +144,20 @@ func (m *Manager) Run(ctx context.Context) error {
 	loops := []func(context.Context){
 		m.submitterLoop,
 		m.pollerLoop,
-		m.verifierLoop,
-		m.librarianLoop,
 		m.urlRefreshLoop,
 		m.taggerRetryLoop,
 		m.mirrorLoop,
 		m.reaperLoop,
 	}
 	if m.o.Puller != nil {
+		// v3: puller drives COMPLETED_TORBOX → READY by actually downloading
+		// files. The v2 verifier + librarian would race against it on the same
+		// transition (the verifier just file-exists-checks a WebDAV mount we no
+		// longer have, so it would mark jobs READY without a local file), so
+		// they're omitted from the loop set in this mode.
 		loops = append(loops, m.pullerLoop)
+	} else {
+		loops = append(loops, m.verifierLoop, m.librarianLoop)
 	}
 	for _, fn := range loops {
 		wg.Add(1)
