@@ -214,7 +214,6 @@ func (s *Server) lookupOwnedJob(ctx context.Context, d *webhookData) (*job.Job, 
 // maybeFirePushover sends a Pushover notification iff:
 //   - Pushover is configured
 //   - Notify-on matches the event
-//   - Job's origin = 'self' (we don't notify on mirror rows)
 //   - pushover_sent_at is still NULL (idempotency on duplicate webhook delivery)
 //
 // To dedup correctly under concurrent webhook deliveries, we *claim* the
@@ -231,10 +230,6 @@ func (s *Server) maybeFirePushover(event string, j *job.Job) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	origin, err := s.store.JobOrigin(ctx, j.NzoID)
-	if err != nil || origin != "self" {
-		return
-	}
 	// Claim the slot atomically. If we lose the race, drop quietly.
 	if err := s.store.MarkPushoverSent(ctx, j.NzoID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {

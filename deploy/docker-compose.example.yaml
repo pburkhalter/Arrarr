@@ -9,13 +9,17 @@ services:
       ARRARR_API_KEY: ${ARRARR_API_KEY}
       TORBOX_API_KEY: ${TORBOX_API_KEY}
       ARRARR_URL_BASE: /sabnzbd
-      LOCAL_VERIFY_BASE: /torbox
-      SONARR_VISIBLE_BASE: /torbox
+      ARRARR_DOWNLOAD_DIR: /downloads
+      ARRARR_DOWNLOAD_CONCURRENCY: "4"
+      # qBittorrent shim — Sonarr/Radarr can target arrarr as a qBit endpoint
+      # too. Leave password unset to disable the shim.
+      ARRARR_QBIT_USERNAME: admin
+      ARRARR_QBIT_PASSWORD: ${ARRARR_QBIT_PASSWORD}
       DB_PATH: /data/arrarr.db
       LOG_LEVEL: info
       LOG_FORMAT: json
     volumes:
       - /opt/docker-data/arrarr:/data
-      - /mnt/torbox:/torbox:ro
+      - /mnt/downloads:/downloads
     extra_hosts:
       - "host.docker.internal:host-gateway"

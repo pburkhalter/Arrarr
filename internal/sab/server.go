@@ -20,23 +20,13 @@ type Server struct {
 	urlBase string
 	maxNZB  int64
 
-	store     Store
-	wake      chan<- struct{}
-	pathMap   pathMapper
-	logger    *slog.Logger
-	completeDir string
+	store  Store
+	wake   chan<- struct{}
+	logger *slog.Logger
 
 	// webhook is set when ARRARR_TORBOX_WEBHOOK_SECRET is configured. nil
 	// means the webhook receiver is disabled and returns 503.
 	webhook *WebhookOptions
-
-	// dashCfg is a read-only view of v2 config knobs the status page renders.
-	// Optional — when nil, the dashboard falls back to a minimal view.
-	dashCfg *DashboardConfig
-}
-
-type pathMapper interface {
-	Visible(folderName string) (string, error)
 }
 
 type Options struct {
@@ -45,11 +35,8 @@ type Options struct {
 	MaxNZBBytes int64
 	Store       Store
 	Wake        chan<- struct{}
-	PathMap     pathMapper
 	Logger      *slog.Logger
-	CompleteDir string
 	Webhook     *WebhookOptions
-	Dashboard   *DashboardConfig
 }
 
 func NewServer(o Options) *Server {
@@ -57,16 +44,13 @@ func NewServer(o Options) *Server {
 		o.Logger = slog.Default()
 	}
 	return &Server{
-		apiKey:      o.APIKey,
-		urlBase:     o.URLBase,
-		maxNZB:      o.MaxNZBBytes,
-		store:       o.Store,
-		wake:        o.Wake,
-		pathMap:     o.PathMap,
-		logger:      o.Logger,
-		completeDir: o.CompleteDir,
-		webhook:     o.Webhook,
-		dashCfg:     o.Dashboard,
+		apiKey:  o.APIKey,
+		urlBase: o.URLBase,
+		maxNZB:  o.MaxNZBBytes,
+		store:   o.Store,
+		wake:    o.Wake,
+		logger:  o.Logger,
+		webhook: o.Webhook,
 	}
 }
 

@@ -7,15 +7,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/pburkhalter/arrarr/internal/arrclient"
 	"github.com/pburkhalter/arrarr/internal/config"
-	"github.com/pburkhalter/arrarr/internal/librarian"
+	"github.com/pburkhalter/arrarr/internal/downloader"
 	"github.com/pburkhalter/arrarr/internal/logger"
-	"github.com/pburkhalter/arrarr/internal/pathmap"
 	"github.com/pburkhalter/arrarr/internal/pushover"
+	"github.com/pburkhalter/arrarr/internal/qbit"
 	"github.com/pburkhalter/arrarr/internal/sab"
 	"github.com/pburkhalter/arrarr/internal/store"
 	"github.com/pburkhalter/arrarr/internal/torbox"
@@ -45,7 +45,7 @@ func main() {
 }
 
 func printHelp() {
-	fmt.Println(`Arrarr — SAB-compatible TorBox usenet shim with library writer.
+	fmt.Println(`Arrarr — SAB+qBit shim for TorBox with a local puller.
 
 Usage:
   arrarr                  Run the daemon (default).
@@ -79,17 +79,6 @@ func runVerifyWebhook() int {
 		return 1
 	}
 	fmt.Println("Test notification fired.")
-	fmt.Println()
-	fmt.Println("Now check:")
-	fmt.Println("  • TorBox Settings → Webhooks lists your URL + secret")
-	fmt.Println("  • Arrarr is reachable at that URL from TorBox's servers")
-	fmt.Println("    (public URL via Caddy/Cloudflare-tunnel; *.home.* won't work)")
-	fmt.Println("  • Arrarr logs show one of:")
-	fmt.Println("       webhook: matched         (event resolved to a job)")
-	fmt.Println("       webhook: not ours        (lookup miss — also expected for some test events)")
-	fmt.Println("       webhook: signature verify failed   (URL or secret wrong)")
-	fmt.Println()
-	fmt.Println("If nothing logs at all, the URL isn't reachable from TorBox.")
 	return 0
 }
 
@@ -104,8 +93,7 @@ func run() error {
 		"listen", cfg.Listen,
 		"url_base", cfg.URLBase,
 		"db", cfg.DBPath,
-		"local_verify_base", cfg.LocalVerifyBase,
-		"sonarr_visible_base", cfg.SonarrVisibleBase)
+		"download_dir", cfg.DownloadDir)
 
 	rootCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -120,44 +108,13 @@ func run() error {
 	}
 
 	tb := torbox.NewClient(cfg.TorboxBaseURL, cfg.TorboxAPIKey, cfg.TorboxRateLimitPerMin, 30*time.Second)
-	pm := pathmap.New(cfg.LocalVerifyBase, cfg.SonarrVisibleBase)
 
-	// v2 librarian: structured /library tree writer (STRM, symlink, or both).
-	// Mode "off" returns a no-op writer so the v1 verifier path stays in charge
-	// of COMPLETED_TORBOX → READY.
-	var libWriter librarian.Writer
-	if cfg.LibraryEnabled() {
-		libWriter, err = librarian.New(cfg.LibraryMode, cfg.LibraryBase, cfg.LocalVerifyBase)
-		if err != nil {
-			return fmt.Errorf("librarian: %w", err)
-		}
-		log.Info("librarian enabled",
-			"mode", cfg.LibraryMode,
-			"base", cfg.LibraryBase,
-			"mount_base", cfg.LocalVerifyBase)
-	}
-
-	// v2 arrclients: optional canonical-naming oracles. Either may be unset.
-	var sonarrClient, radarrClient *arrclient.Client
-	if cfg.SonarrURL != "" && cfg.SonarrAPIKey != "" {
-		sonarrClient = arrclient.New(cfg.SonarrURL, cfg.SonarrAPIKey, arrclient.MediaTypeSeries, cfg.ArrCallbackTimeout)
-		log.Info("sonarr canonical naming enabled", "url", cfg.SonarrURL)
-	}
-	if cfg.RadarrURL != "" && cfg.RadarrAPIKey != "" {
-		radarrClient = arrclient.New(cfg.RadarrURL, cfg.RadarrAPIKey, arrclient.MediaTypeMovie, cfg.ArrCallbackTimeout)
-		log.Info("radarr canonical naming enabled", "url", cfg.RadarrURL)
-	}
-
-	// v2 pushover: optional notification sink for ready/failed events.
 	var pushoverClient *pushover.Client
 	if cfg.PushoverEnabled() {
 		pushoverClient = pushover.New(cfg.PushoverToken, cfg.PushoverUser, 6*time.Second)
 		log.Info("pushover enabled", "notify_on", cfg.PushoverNotifyOn)
 	}
 
-	// v2 webhook: TorBox-side push channel. Only enabled when a secret is set
-	// — without a secret we'd have no way to verify signatures, so we'd rather
-	// 503 the receiver than silently accept unsigned payloads.
 	var webhookOpts *sab.WebhookOptions
 	if cfg.WebhookEnabled() {
 		webhookOpts = &sab.WebhookOptions{
@@ -180,48 +137,69 @@ func run() error {
 		MaxNZBBytes: cfg.MaxNZBBytes,
 		Store:       sab.Adapt(st),
 		Wake:        wakeCh,
-		PathMap:     pm,
 		Logger:      log.With("component", "sab"),
-		CompleteDir: cfg.SonarrVisibleBase,
 		Webhook:     webhookOpts,
-		Dashboard: &sab.DashboardConfig{
-			LibraryEnabled: cfg.LibraryEnabled(),
-			LibraryMode:    cfg.LibraryMode,
-			MirrorEnabled:  cfg.MirrorEnabled(),
-			InstanceName:   cfg.InstanceName,
-		},
 	})
 
-	wm := worker.New(worker.Options{
-		Store:                    st,
-		Torbox:                   tb,
-		PathMap:                  pm,
-		Logger:                   log.With("component", "worker"),
-		Wake:                     wakeCh,
-		DispatchEvery:            cfg.DispatchInterval,
-		PollEvery:                cfg.WorkerPollInterval,
-		VerifyEvery:              cfg.WorkerVerifyInterval,
-		ReapEvery:                cfg.ReapInterval,
-		ReapOlderThan:            time.Duration(cfg.JobRetentionDays) * 24 * time.Hour,
-		WorkerPoolSize:           cfg.WorkerPoolSize,
-		InstanceName:             cfg.InstanceName,
-		Librarian:                libWriter,
-		LocalVerifyBase:          cfg.LocalVerifyBase,
-		StreamingURLRefreshAfter: cfg.StreamingURLRefreshAfter,
-		Sonarr:                   sonarrClient,
-		Radarr:                   radarrClient,
-		ArrCallbackTimeout:       cfg.ArrCallbackTimeout,
-		MirrorEnabled:            cfg.MirrorEnabled(),
-		MirrorPollInterval:       cfg.MirrorPollInterval,
+	dl, err := downloader.New(downloader.Options{
+		BaseDir:     cfg.DownloadDir,
+		Concurrency: cfg.DownloadConcurrency,
+		Logger:      log.With("component", "downloader"),
 	})
-	if cfg.MirrorEnabled() {
-		log.Info("mirror mode enabled — TorBox account-wide downloads will populate /library",
-			"poll_interval", cfg.MirrorPollInterval)
+	if err != nil {
+		return fmt.Errorf("downloader: %w", err)
+	}
+	puller := worker.NewPuller(worker.PullerOptions{
+		Store:      st,
+		Torbox:     tb,
+		Downloader: dl,
+		BaseDir:    cfg.DownloadDir,
+		Logger:     log.With("component", "puller"),
+	})
+	log.Info("puller enabled", "download_dir", cfg.DownloadDir, "concurrency", cfg.DownloadConcurrency)
+
+	wm := worker.New(worker.Options{
+		Store:          st,
+		Torbox:         tb,
+		Logger:         log.With("component", "worker"),
+		Wake:           wakeCh,
+		DispatchEvery:  cfg.DispatchInterval,
+		PollEvery:      cfg.WorkerPollInterval,
+		ReapEvery:      cfg.ReapInterval,
+		ReapOlderThan:  time.Duration(cfg.JobRetentionDays) * 24 * time.Hour,
+		WorkerPoolSize: cfg.WorkerPoolSize,
+		Puller:         puller,
+	})
+
+	// Multiplex sab + qbit on one listener. sab.Handler() routes /sabnzbd/*
+	// plus /webhook + /healthz at root; qbit.Handler() routes /api/v2/*.
+	sabHandler := srv.Handler()
+	var root http.Handler = sabHandler
+	if cfg.QbitEnabled() {
+		qbitSrv := qbit.NewServer(qbit.Options{
+			Username:        cfg.QbitUsername,
+			Password:        cfg.QbitPassword,
+			URLBase:         cfg.QbitURLBase,
+			DownloadDir:     cfg.DownloadDir,
+			MaxTorrentBytes: cfg.MaxTorrentBytes,
+			Store:           qbit.Adapt(st),
+			Wake:            wakeCh,
+			Logger:          log.With("component", "qbit"),
+		})
+		qbitHandler := qbitSrv.Handler()
+		root = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/api/v2/") || r.URL.Path == "/api/v2" {
+				qbitHandler.ServeHTTP(w, r)
+				return
+			}
+			sabHandler.ServeHTTP(w, r)
+		})
+		log.Info("qbit shim enabled", "url_base", cfg.QbitURLBase, "max_torrent_bytes", cfg.MaxTorrentBytes)
 	}
 
 	g, ctx := errgroup.WithContext(rootCtx)
 	g.Go(func() error {
-		return sab.Run(ctx, cfg.Listen, srv.Handler(), log.With("component", "http"))
+		return sab.Run(ctx, cfg.Listen, root, log.With("component", "http"))
 	})
 	g.Go(func() error {
 		return wm.Run(ctx)

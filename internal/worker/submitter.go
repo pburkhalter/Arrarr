@@ -51,25 +51,34 @@ func (m *Manager) dispatchOnce(ctx context.Context) {
 }
 
 func (m *Manager) submitOne(ctx context.Context, j *job.Job) {
-	if len(j.NzbBlob) == 0 {
-		m.log.Error("submit: empty nzb blob", "nzo_id", j.NzoID)
-		_ = m.o.Store.Transition(ctx, j.NzoID, store.Transition{
-			From:        job.StateNew,
-			To:          job.StateFailed,
-			LastError:   strPtr("empty nzb blob"),
-			CompletedAt: nowPtr(),
-			ClearClaimed: true,
-		})
-		return
-	}
-
-	resp, err := m.o.Torbox.CreateUsenetDownload(ctx, j.Filename, j.NzbBlob, "")
+	resp, err := m.callCreate(ctx, j)
 	if err != nil {
+		if errors.Is(err, errEmptyPayload) {
+			m.log.Error("submit: empty payload", "nzo_id", j.NzoID, "source", j.Source)
+			_ = m.o.Store.Transition(ctx, j.NzoID, store.Transition{
+				From:         job.StateNew,
+				To:           job.StateFailed,
+				LastError:    strPtr("empty payload"),
+				CompletedAt:  nowPtr(),
+				ClearClaimed: true,
+			})
+			return
+		}
 		m.handleSubmitFailure(ctx, j, err)
 		return
 	}
 	queueID := resp.QueueID
 	activeID := resp.ID
+	// TorBox /torrents/createtorrent returns torrent_id (not id/queue_id);
+	// /usenet/createusenetdownload may also return usenet_id on duplicates.
+	// Treat any non-zero "operational" id as activeID so the poller can match.
+	if activeID == 0 {
+		if resp.TorrentID != 0 {
+			activeID = resp.TorrentID
+		} else if resp.UsenetID != 0 {
+			activeID = resp.UsenetID
+		}
+	}
 	// 0/0 means TorBox accepted upload but returned a "duplicate"-style response
 	// without ids (often after a previous timeout where the NZB was still
 	// processed server-side). Don't transition to SUBMITTED — the poller would
@@ -96,48 +105,6 @@ func (m *Manager) submitOne(ctx context.Context, j *job.Job) {
 		return
 	}
 	m.log.Info("submitted", "nzo_id", j.NzoID, "queue_id", queueID, "active_id", activeID, "filename", j.Filename)
-
-	// Best-effort tag the download on TorBox. Tags identify our downloads on
-	// shared accounts and let the webhook handler filter "ours vs theirs"
-	// without parsing the human-readable name. Failure here is non-fatal —
-	// TorBox's edit endpoint requires the item to be "cached" (past initial
-	// processing), so it often fails immediately after create. A future tagger
-	// worker (Phase B/C) will retry rows with tagged_at IS NULL.
-	m.tryTagAfterSubmit(ctx, j, queueID, activeID)
-}
-
-// tryTagAfterSubmit attempts a best-effort PUT to /usenet/editusenetdownload to
-// set the ownership tags on the just-created download. Logs but does not fail.
-func (m *Manager) tryTagAfterSubmit(ctx context.Context, j *job.Job, queueID, activeID int64) {
-	id := activeID
-	if id == 0 {
-		id = queueID
-	}
-	if id == 0 {
-		// 0/0 ids means we have nothing to tag against yet; the poller will
-		// recover ids by name match, and a future tagger pass can apply tags.
-		return
-	}
-	tagID := job.TagID(j.NzoID)
-	tags := []string{
-		"arrarr",
-		"host:" + m.o.InstanceName,
-		"job:" + tagID,
-		"cat:" + j.Category,
-	}
-	// Cap the request to a separate timeout — the create call may have used the
-	// 90s envelope; tagging shouldn't compete.
-	tagCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	if err := m.o.Torbox.EditUsenet(tagCtx, id, torbox.EditUsenetParams{Tags: tags}); err != nil {
-		m.log.Warn("tag write failed (non-fatal)", "nzo_id", j.NzoID, "id", id, "err", describe(err))
-		return
-	}
-	if err := m.o.Store.MarkTagged(ctx, j.NzoID); err != nil {
-		m.log.Warn("mark tagged write failed", "nzo_id", j.NzoID, "err", err)
-		return
-	}
-	m.log.Info("tagged", "nzo_id", j.NzoID, "id", id, "tags", tags)
 }
 
 func (m *Manager) handleSubmitFailure(ctx context.Context, j *job.Job, err error) {
@@ -202,3 +169,29 @@ func torboxRetryAfter(err error) time.Duration {
 
 func strPtr(s string) *string { return &s }
 func nowPtr() *time.Time      { t := time.Now().UTC(); return &t }
+
+// errEmptyPayload is returned when a NEW job has neither nzb blob nor torrent
+// blob nor magnet — nothing to send to TorBox. Caller fails the job.
+var errEmptyPayload = errors.New("empty payload")
+
+// callCreate dispatches the right TorBox create-call for this job's source.
+// "" or "usenet" → CreateUsenetDownload with NzbBlob.
+// "torrent"      → CreateTorrentFromMagnet (if Magnet set) else CreateTorrentFromFile.
+func (m *Manager) callCreate(ctx context.Context, j *job.Job) (*torbox.CreateResp, error) {
+	switch j.Source {
+	case "torrent":
+		params := torbox.CreateTorrentParams{Name: j.Filename}
+		if j.Magnet.Valid && j.Magnet.String != "" {
+			return m.o.Torbox.CreateTorrentFromMagnet(ctx, j.Magnet.String, params)
+		}
+		if len(j.NzbBlob) == 0 {
+			return nil, errEmptyPayload
+		}
+		return m.o.Torbox.CreateTorrentFromFile(ctx, j.Filename, j.NzbBlob, params)
+	default:
+		if len(j.NzbBlob) == 0 {
+			return nil, errEmptyPayload
+		}
+		return m.o.Torbox.CreateUsenetDownload(ctx, j.Filename, j.NzbBlob, "")
+	}
+}

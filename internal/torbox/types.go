@@ -10,8 +10,10 @@ type envelope struct {
 }
 
 type CreateResp struct {
-	QueueID int64 `json:"queue_id"`
-	ID      int64 `json:"id"`
+	QueueID   int64 `json:"queue_id"`
+	ID        int64 `json:"id"`
+	TorrentID int64 `json:"torrent_id"` // torrent endpoint returns this instead of id/queue_id
+	UsenetID  int64 `json:"usenet_id"`  // some legacy paths return this
 	// hash + auth_id are deliberately not parsed: TorBox sometimes returns
 	// them as strings, which broke createusenetdownload. We don't use them.
 }
@@ -19,6 +21,12 @@ type CreateResp struct {
 func (c *CreateResp) EffectiveID() int64 {
 	if c.ID != 0 {
 		return c.ID
+	}
+	if c.TorrentID != 0 {
+		return c.TorrentID
+	}
+	if c.UsenetID != 0 {
+		return c.UsenetID
 	}
 	return c.QueueID
 }

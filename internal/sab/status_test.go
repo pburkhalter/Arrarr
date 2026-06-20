@@ -24,13 +24,7 @@ func TestStatusPageRenders(t *testing.T) {
 		MaxNZBBytes: 1 << 20,
 		Store:       Adapt(st),
 		Logger:      slog.Default(),
-		Dashboard: &DashboardConfig{
-			LibraryEnabled: true,
-			LibraryMode:    "strm",
-			MirrorEnabled:  false,
-			InstanceName:   "patrik",
-		},
-		Webhook: &WebhookOptions{Secret: "shh"},
+		Webhook:     &WebhookOptions{Secret: "shh"},
 	})
 
 	w := httptest.NewRecorder()
@@ -45,11 +39,8 @@ func TestStatusPageRenders(t *testing.T) {
 	body := w.Body.String()
 	for _, want := range []string{
 		"Arrarr",
-		"instance <strong>patrik</strong>",
 		"Pipeline",
-		"Library writer",
 		"Recent activity",
-		"strm",     // library mode pill
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q", want)

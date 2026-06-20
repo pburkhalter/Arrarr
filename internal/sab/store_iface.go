@@ -15,7 +15,6 @@ type storeReader interface {
 	ListByStates(ctx context.Context, states []job.State, limit int) ([]*job.Job, error)
 	ListReady(ctx context.Context, limit int) ([]*job.Job, error)
 	PushoverAlreadySent(ctx context.Context, nzoID string) (bool, error)
-	JobOrigin(ctx context.Context, nzoID string) (string, error)
 	FetchStats(ctx context.Context, recentLimit int) (*store.Stats, error)
 }
 
@@ -57,9 +56,6 @@ func (s storeAdapter) FindByFolderName(ctx context.Context, name string) (*job.J
 }
 func (s storeAdapter) PushoverAlreadySent(ctx context.Context, nzoID string) (bool, error) {
 	return s.Store.PushoverAlreadySent(ctx, nzoID)
-}
-func (s storeAdapter) JobOrigin(ctx context.Context, nzoID string) (string, error) {
-	return s.Store.JobOrigin(ctx, nzoID)
 }
 func (s storeAdapter) MarkPushoverSent(ctx context.Context, nzoID string) error {
 	return s.Store.MarkPushoverSent(ctx, nzoID)
