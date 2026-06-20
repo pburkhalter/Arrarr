@@ -9,8 +9,7 @@ ALTER TABLE jobs ADD COLUMN magnet TEXT;
 
 ALTER TABLE jobs ADD COLUMN local_path TEXT;
 -- absolute path to the directory under DOWNLOAD_DIR where files were pulled.
--- Reported to Sonarr/Radarr as the import-from path. Distinct from library_path
--- (v2 STRM/symlink writer output) so v2 and v3 can coexist during transition.
+-- Reported to Sonarr/Radarr as the import-from path.
 
 ALTER TABLE jobs ADD COLUMN bytes_downloaded INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE jobs ADD COLUMN bytes_total INTEGER NOT NULL DEFAULT 0;

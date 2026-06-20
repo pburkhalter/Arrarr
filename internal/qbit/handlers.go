@@ -2,7 +2,6 @@ package qbit
 
 import (
 	"context"
-	"database/sql"
 	"encoding/base32"
 	"encoding/hex"
 	"encoding/json"
@@ -131,12 +130,12 @@ func (s *Server) torrentInfoFromJob(j *job.Job) TorrentInfo {
 	return info
 }
 
-// displayName prefers the librarian's path basename (which is the canonical
-// release name once written), falls back to the torbox folder, then the raw
-// filename Sonarr handed us at submit time.
+// displayName prefers the puller's local-path basename (the release folder we
+// wrote), falls back to the torbox folder, then the raw filename Sonarr handed
+// us at submit time.
 func displayName(j *job.Job) string {
-	if j.LibraryPath.Valid && j.LibraryPath.String != "" {
-		return filepath.Base(j.LibraryPath.String)
+	if j.LocalPath.Valid && j.LocalPath.String != "" {
+		return filepath.Base(j.LocalPath.String)
 	}
 	if j.TorboxFolderName.Valid && j.TorboxFolderName.String != "" {
 		return j.TorboxFolderName.String
@@ -152,8 +151,8 @@ func (s *Server) savePathFor(category string) string {
 }
 
 func (s *Server) contentPathFor(j *job.Job, savePath string) string {
-	if j.LibraryPath.Valid && j.LibraryPath.String != "" {
-		return j.LibraryPath.String
+	if j.LocalPath.Valid && j.LocalPath.String != "" {
+		return j.LocalPath.String
 	}
 	if j.TorboxFolderName.Valid && j.TorboxFolderName.String != "" {
 		return filepath.Join(savePath, j.TorboxFolderName.String)
@@ -476,11 +475,11 @@ func (s *Server) handleTorrentsFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// We don't track per-file breakdown until the file is local. For READY
-	// rows with a LibraryPath, return a one-file stub so Sonarr's import
+	// rows with a LocalPath, return a one-file stub so Sonarr's import
 	// scanner has something to walk.
 	name := displayName(j)
-	if j.LibraryPath.Valid && j.LibraryPath.String != "" {
-		name = filepath.Base(j.LibraryPath.String)
+	if j.LocalPath.Valid && j.LocalPath.String != "" {
+		name = filepath.Base(j.LocalPath.String)
 	}
 	progress := 0.0
 	if j.State == job.StateReady {
@@ -549,8 +548,8 @@ func readHashParam(r *http.Request) string {
 // state and Sonarr doesn't retry on partial cleanup failure.
 func (s *Server) tryRemoveLocal(j *job.Job) {
 	target := ""
-	if j.LibraryPath.Valid && j.LibraryPath.String != "" {
-		target = j.LibraryPath.String
+	if j.LocalPath.Valid && j.LocalPath.String != "" {
+		target = j.LocalPath.String
 	} else if j.TorboxFolderName.Valid && j.TorboxFolderName.String != "" {
 		target = filepath.Join(s.savePathFor(j.Category), j.TorboxFolderName.String)
 	}
@@ -562,7 +561,3 @@ func (s *Server) tryRemoveLocal(j *job.Job) {
 	}
 }
 
-// nullStringValue is a tiny helper used only in tests, kept here so the
-// package doesn't need a separate testing util file. Avoids importing
-// database/sql in handlers where we already have it.
-var _ = sql.NullString{}

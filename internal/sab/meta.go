@@ -21,7 +21,6 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
 	resp := GetConfigResp{
 		Config: GetConfig{
 			Misc: MiscConfig{
-				CompleteDir:            s.completeDir,
 				HistoryRetention:       "0",
 				HistoryRetentionOption: "all",
 				HistoryRetentionNumber: 0,

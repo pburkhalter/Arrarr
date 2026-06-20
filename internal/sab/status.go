@@ -34,16 +34,6 @@ var statusTmpl = template.Must(
 					return d.Round(time.Hour).String() + " ago"
 				}
 			},
-			"untilExpires": func(t *time.Time) string {
-				if t == nil {
-					return "—"
-				}
-				d := time.Until(*t)
-				if d < 0 {
-					return "expired"
-				}
-				return "in " + d.Round(time.Minute).String()
-			},
 			"ifEmpty": func(s, fallback string) string {
 				if s == "" {
 					return fallback
@@ -54,15 +44,11 @@ var statusTmpl = template.Must(
 		Parse(statusHTML))
 
 type statusPageData struct {
-	Stats             *store.Stats
-	WebhookEnabled    bool
+	Stats              *store.Stats
+	WebhookEnabled     bool
 	PushoverConfigured bool
-	PushoverNotifyOn  string
-	LibraryEnabled    bool
-	LibraryMode       string
-	MirrorEnabled     bool
-	InstanceName      string
-	GeneratedAt       time.Time
+	PushoverNotifyOn   string
+	GeneratedAt        time.Time
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -82,26 +68,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			data.PushoverNotifyOn = s.webhook.PushoverNotifyOn
 		}
 	}
-	if s.dashCfg != nil {
-		data.LibraryEnabled = s.dashCfg.LibraryEnabled
-		data.LibraryMode = s.dashCfg.LibraryMode
-		data.MirrorEnabled = s.dashCfg.MirrorEnabled
-		data.InstanceName = s.dashCfg.InstanceName
-	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := statusTmpl.Execute(w, data); err != nil {
-		// Headers already sent — best we can do is log via the chi recoverer.
 		s.logger.Warn("status: template execute failed", "err", err)
 	}
-}
-
-// DashboardConfig is the read-only view of v2 settings the dashboard needs.
-// Held by reference on Server so main.go can fill it without burdening the
-// hot path of webhook/SAB handlers.
-type DashboardConfig struct {
-	LibraryEnabled bool
-	LibraryMode    string
-	MirrorEnabled  bool
-	InstanceName   string
 }

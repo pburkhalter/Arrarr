@@ -38,14 +38,6 @@ type Job struct {
 	UpdatedAt        time.Time
 	CompletedAt      sql.NullTime
 
-	// LibraryPath is the v2 librarian's structured-tree path. When set, the
-	// SAB history endpoint reports it as the completion path so Sonarr/Radarr
-	// do an in-place register against the file Arrarr already wrote (no
-	// copy, no move). When unset, the v1 fallback (pathMap-translated TorBox
-	// folder) is used.
-	LibraryPath sql.NullString
-
-	// --- v3: torrent + local-download support ---
 	// Source distinguishes which TorBox API the submitter calls
 	// (CreateUsenetDownload vs CreateTorrentFromFile/Magnet) and which mylist
 	// endpoint the poller queries. "" is treated as "usenet" for backward compat.
@@ -58,8 +50,8 @@ type Job struct {
 	Magnet sql.NullString
 
 	// LocalPath is the absolute directory under DOWNLOAD_DIR where the puller
-	// wrote the files for this job. Distinct from LibraryPath so the v2
-	// librarian (STRM/symlink) and v3 downloader can coexist during transition.
+	// wrote the files for this job. Reported to Sonarr/Radarr as the import
+	// path via the qbit/sab shim.
 	LocalPath sql.NullString
 
 	// BytesDownloaded/BytesTotal are puller progress, surfaced via the qbit

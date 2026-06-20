@@ -16,15 +16,8 @@ import (
 )
 
 // Puller transitions COMPLETED_TORBOX jobs to READY by pulling the actual file
-// bytes from TorBox CDN onto local disk. This is the v3 replacement for the v2
-// librarian (which wrote STRMs/symlinks pointing into a TorBox WebDAV mount —
-// fragile when TorBox purges old items).
-//
-// The puller only runs when DOWNLOAD_DIR is configured. When LibraryMode is
-// "off" and no DOWNLOAD_DIR is set, jobs stay in COMPLETED_TORBOX indefinitely
-// (no-op). When the v2 librarian is also enabled, only one of them will pick
-// up a given job — the librarian filters on library_writer_state, the puller
-// filters on local_path being NULL.
+// bytes from TorBox CDN onto local disk so Sonarr/Radarr can import via a
+// normal local path.
 type Puller struct {
 	store      *store.Store
 	tb         torboxPullerClient
@@ -68,9 +61,6 @@ func NewPuller(opts PullerOptions) *Puller {
 }
 
 func (m *Manager) pullerLoop(ctx context.Context) {
-	if m.o.Puller == nil {
-		return
-	}
 	ticker := time.NewTicker(m.o.PullEvery)
 	defer ticker.Stop()
 	for {
@@ -100,10 +90,6 @@ func (p *Puller) Tick(ctx context.Context, limit int) {
 				!errors.Is(err, store.ErrInvalidTransition) {
 				p.log.Warn("puller: stale-localpath transition failed", "nzo_id", j.NzoID, "err", err)
 			}
-			continue
-		}
-		if j.LibraryPath.Valid {
-			// v2 librarian already handled this one; skip.
 			continue
 		}
 		p.pullOne(ctx, j)
@@ -248,8 +234,8 @@ func (p *Puller) scheduleRetry(ctx context.Context, j *job.Job, reason string) {
 		_ = p.store.Transition(ctx, j.NzoID, store.Transition{
 			From:        j.State,
 			To:          job.StateFailed,
-			LastError:   strPtrLocal("puller exhausted: " + reason),
-			CompletedAt: nowPtrLocal(),
+			LastError:   strPtr("puller exhausted: " + reason),
+			CompletedAt: nowPtr(),
 		})
 		return
 	}
@@ -311,5 +297,3 @@ func sanitizeForFS(name string) string {
 	return name
 }
 
-func strPtrLocal(s string) *string { return &s }
-func nowPtrLocal() *time.Time      { t := time.Now(); return &t }

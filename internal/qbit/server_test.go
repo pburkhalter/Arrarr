@@ -236,8 +236,8 @@ func TestInfoMapsStateAndSavePath(t *testing.T) {
 	}
 	fs.jobs["nz_1"].SizeBytes.Valid = true
 	fs.jobs["nz_1"].SizeBytes.Int64 = 1024
-	fs.jobs["nz_1"].LibraryPath.Valid = true
-	fs.jobs["nz_1"].LibraryPath.String = "/library/series/MyShow/Season 01/MyShow.S01E01.mkv"
+	fs.jobs["nz_1"].LocalPath.Valid = true
+	fs.jobs["nz_1"].LocalPath.String = "/downloads/sonarr/MyShow.S01E01"
 
 	r := httptest.NewRequest("GET", "/api/v2/torrents/info?category=sonarr", nil)
 	r.AddCookie(loginCookie(t, srv))
@@ -266,9 +266,9 @@ func TestInfoMapsStateAndSavePath(t *testing.T) {
 	if got.SavePath != filepath.Join("/downloads", "sonarr") {
 		t.Errorf("save_path=%q want /downloads/sonarr", got.SavePath)
 	}
-	wantCP := "/library/series/MyShow/Season 01/MyShow.S01E01.mkv"
+	wantCP := "/downloads/sonarr/MyShow.S01E01"
 	if got.ContentPath != wantCP {
-		t.Errorf("content_path=%q want %q (LibraryPath wins)", got.ContentPath, wantCP)
+		t.Errorf("content_path=%q want %q (LocalPath wins)", got.ContentPath, wantCP)
 	}
 }
 

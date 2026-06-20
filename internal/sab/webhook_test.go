@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/pburkhalter/arrarr/internal/job"
-	"github.com/pburkhalter/arrarr/internal/pathmap"
 	"github.com/pburkhalter/arrarr/internal/pushover"
 	"github.com/pburkhalter/arrarr/internal/store"
 )
@@ -55,12 +54,10 @@ func newWebhookServer(t *testing.T, secret string, notifyOn string) (*Server, *s
 		MaxNZBBytes: 1 << 20,
 		Store:       Adapt(st),
 		Wake:        make(chan struct{}, 1),
-		PathMap:     pathmap.New("/mnt/torbox", "/torbox"),
 		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		CompleteDir: "/torbox",
 		Webhook: &WebhookOptions{
 			Secret:           secret,
-			RequireSignature: true, // existing tests cover strict mode
+			RequireSignature: true,
 			ReplayWindow:     5 * time.Minute,
 			Pushover:         pc,
 			PushoverNotifyOn: notifyOn,
@@ -114,7 +111,7 @@ func sendWebhook(t *testing.T, srv *Server, secret string, payload any) *httptes
 	return w
 }
 
-func insertJobAtState(t *testing.T, st *store.Store, nzoID, category, folder string, queueID, activeID int64, state job.State, origin string) {
+func insertJobAtState(t *testing.T, st *store.Store, nzoID, category, folder string, queueID, activeID int64, state job.State) {
 	t.Helper()
 	j := &job.Job{
 		NzoID:     nzoID,
@@ -128,8 +125,8 @@ func insertJobAtState(t *testing.T, st *store.Store, nzoID, category, folder str
 		t.Fatal(err)
 	}
 	_, err := st.DB().ExecContext(context.Background(), `UPDATE jobs SET
-		state = ?, torbox_queue_id = ?, torbox_active_id = ?, torbox_folder_name = ?, origin = ?
-		WHERE nzo_id = ?`, string(state), queueID, activeID, folder, origin, nzoID)
+		state = ?, torbox_queue_id = ?, torbox_active_id = ?, torbox_folder_name = ?
+		WHERE nzo_id = ?`, string(state), queueID, activeID, folder, nzoID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +180,6 @@ func TestWebhookValidUnknownIDReturns204AndDoesNotNotify(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Errorf("status=%d want 204 (unknown ID = drop)", w.Code)
 	}
-	// Pushover must not fire — ownership lookup missed.
 	time.Sleep(50 * time.Millisecond) // notify is async
 	if push.Load() != 0 {
 		t.Errorf("pushover fired %d times for foreign download", push.Load())
@@ -194,7 +190,7 @@ func TestWebhookMatchesByStructuredIDAndFiresPushover(t *testing.T) {
 	srv, st, push, _ := newWebhookServer(t, "shh", "ready")
 	insertJobAtState(t, st, "arrarr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		"sonarr", "Twisted.Metal.S02E01.WEB.h264-WAYNE",
-		11, 99, job.StateCompletedTorbox, "self")
+		11, 99, job.StateCompletedTorbox)
 
 	w := sendWebhook(t, srv, "shh", map[string]any{
 		"event": "download.ready",
@@ -203,7 +199,6 @@ func TestWebhookMatchesByStructuredIDAndFiresPushover(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Errorf("status=%d want 204", w.Code)
 	}
-	// Pushover is fired in a goroutine; wait for it.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) && push.Load() == 0 {
 		time.Sleep(10 * time.Millisecond)
@@ -229,7 +224,7 @@ func TestWebhookMatchesByStructuredIDAndFiresPushover(t *testing.T) {
 func TestWebhookDuplicateDeliveryDoesNotDoubleNotify(t *testing.T) {
 	srv, st, push, _ := newWebhookServer(t, "shh", "ready")
 	insertJobAtState(t, st, "arrarr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		"sonarr", "X", 0, 99, job.StateCompletedTorbox, "self")
+		"sonarr", "X", 0, 99, job.StateCompletedTorbox)
 
 	for i := 0; i < 3; i++ {
 		w := sendWebhook(t, srv, "shh", map[string]any{
@@ -240,35 +235,16 @@ func TestWebhookDuplicateDeliveryDoesNotDoubleNotify(t *testing.T) {
 			t.Errorf("attempt %d status=%d want 204", i, w.Code)
 		}
 	}
-	// Wait for any in-flight pushover goroutine.
 	time.Sleep(200 * time.Millisecond)
 	if push.Load() != 1 {
 		t.Errorf("pushover calls=%d want 1 (duplicate webhook delivery should be idempotent)", push.Load())
 	}
 }
 
-func TestWebhookMirrorOriginDoesNotFirePushover(t *testing.T) {
-	srv, st, push, _ := newWebhookServer(t, "shh", "ready")
-	insertJobAtState(t, st, "arrarr_cccccccccccccccccccccccccccccccc",
-		"sonarr", "X", 0, 77, job.StateCompletedTorbox, "mirror")
-
-	w := sendWebhook(t, srv, "shh", map[string]any{
-		"event": "download.ready",
-		"data":  map[string]any{"id": 77},
-	})
-	if w.Code != http.StatusNoContent {
-		t.Errorf("status=%d want 204", w.Code)
-	}
-	time.Sleep(150 * time.Millisecond)
-	if push.Load() != 0 {
-		t.Errorf("pushover fired %d times for mirror-origin job", push.Load())
-	}
-}
-
 func TestWebhookFailedEventNotifiesWhenNotifyOnBoth(t *testing.T) {
 	srv, st, push, _ := newWebhookServer(t, "shh", "both")
 	insertJobAtState(t, st, "arrarr_dddddddddddddddddddddddddddddddd",
-		"sonarr", "X", 0, 22, job.StateCompletedTorbox, "self")
+		"sonarr", "X", 0, 22, job.StateCompletedTorbox)
 
 	w := sendWebhook(t, srv, "shh", map[string]any{
 		"event": "download.failed",
@@ -289,7 +265,7 @@ func TestWebhookFailedEventNotifiesWhenNotifyOnBoth(t *testing.T) {
 func TestWebhookFailedEventNotificationGatedByNotifyOn(t *testing.T) {
 	srv, st, push, _ := newWebhookServer(t, "shh", "ready") // ready-only
 	insertJobAtState(t, st, "arrarr_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-		"sonarr", "X", 0, 33, job.StateCompletedTorbox, "self")
+		"sonarr", "X", 0, 33, job.StateCompletedTorbox)
 
 	w := sendWebhook(t, srv, "shh", map[string]any{
 		"event": "download.failed",
@@ -308,9 +284,8 @@ func TestWebhookMatchesByFolderName(t *testing.T) {
 	srv, st, push, _ := newWebhookServer(t, "shh", "ready")
 	folder := "Twisted.Metal.S02E03.WEB.h264-WAYNE"
 	insertJobAtState(t, st, "arrarr_ffffffffffffffffffffffffffffffff",
-		"sonarr", folder, 0, 0, job.StateCompletedTorbox, "self")
+		"sonarr", folder, 0, 0, job.StateCompletedTorbox)
 
-	// No structured id in the payload — only the name.
 	w := sendWebhook(t, srv, "shh", map[string]any{
 		"event": "download.ready",
 		"data":  map[string]any{"name": folder},
@@ -346,8 +321,7 @@ func TestWebhookOversizedBodyRejected(t *testing.T) {
 
 // TestWebhookInsecureModeAcceptsUnsigned exercises the RequireSignature=false
 // path used when integrating with TorBox-style webhook senders that don't
-// implement Standard Webhooks signing. The lookup chain still gates Pushover
-// (origin='self', match in DB), so unsigned spam can't trigger notifications.
+// implement Standard Webhooks signing.
 func TestWebhookInsecureModeAcceptsUnsigned(t *testing.T) {
 	dir := t.TempDir()
 	st, _ := store.Open(context.Background(), filepath.Join(dir, "t.db"))
@@ -380,11 +354,10 @@ func TestWebhookInsecureModeAcceptsUnsigned(t *testing.T) {
 
 func TestWebhookInsecureModeMatchesAndProcesses(t *testing.T) {
 	srv, st, _, _ := newWebhookServer(t, "shh", "off")
-	// Replace webhook opts to insecure mode
 	srv.webhook.RequireSignature = false
 
 	insertJobAtState(t, st, "arrarr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"sonarr", "X.Y.Z", 0, 555, job.StateCompletedTorbox, "self")
+		"sonarr", "X.Y.Z", 0, 555, job.StateCompletedTorbox)
 
 	req := httptest.NewRequest("POST", "/sabnzbd/webhook",
 		bytes.NewReader([]byte(`{"event":"download.ready","data":{"id":555}}`)))
@@ -396,7 +369,6 @@ func TestWebhookInsecureModeMatchesAndProcesses(t *testing.T) {
 }
 
 func TestWebhookGetReturnsMethodNotAllowed(t *testing.T) {
-	// Webhook is registered POST-only; chi should respond 405 to GET.
 	srv, _, _, _ := newWebhookServer(t, "shh", "ready")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/sabnzbd/webhook", nil))

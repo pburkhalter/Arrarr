@@ -30,7 +30,6 @@
   .card .label { color: var(--fg-dim); font-size: 11px; text-transform: uppercase;
                  letter-spacing: 0.05em; margin-bottom: 4px; }
   .card .value { font-size: 24px; font-weight: 500; font-feature-settings: "tnum"; }
-  .card .sub { color: var(--fg-dim); font-size: 12px; margin-top: 4px; }
   .stack { display: flex; gap: 12px; flex-wrap: wrap; }
   .pill {
     display: inline-block; padding: 2px 8px; border-radius: 3px;
@@ -54,10 +53,6 @@
   .state-READY            { color: var(--ok); }
   .state-FAILED           { color: var(--err); }
   .state-CANCELED         { color: var(--fg-dim); }
-  .lib-pending { color: var(--warn); }
-  .lib-written { color: var(--ok); }
-  .lib-failed  { color: var(--err); }
-  .origin-mirror { color: var(--fg-dim); font-style: italic; }
   footer { color: var(--fg-dim); font-size: 11px; margin-top: 32px; text-align: center; }
 </style>
 </head>
@@ -65,8 +60,7 @@
 
 <h1>Arrarr</h1>
 <div class="meta">
-  instance <strong>{{ifEmpty .InstanceName "arrarr"}}</strong>
-  · generated {{ago .GeneratedAt}}
+  generated {{ago .GeneratedAt}}
   · auto-refresh 30s
 </div>
 
@@ -80,47 +74,8 @@
   {{- end}}
 </div>
 
-<h2>Library writer</h2>
-<div class="grid">
-  {{- range $st, $count := .Stats.LibraryStateCounts}}
-  <div class="card">
-    <div class="label lib-{{$st}}">library_writer_state · {{$st}}</div>
-    <div class="value">{{$count}}</div>
-  </div>
-  {{- end}}
-  <div class="card">
-    <div class="label">URL refreshes due ≤1h</div>
-    <div class="value">{{.Stats.UpcomingRefreshes}}</div>
-  </div>
-  <div class="card">
-    <div class="label">Untagged on TorBox</div>
-    <div class="value">{{.Stats.UntaggedCount}}</div>
-    <div class="sub">tagger retries every 90s</div>
-  </div>
-</div>
-
-<h2>Origin</h2>
-<div class="stack">
-  {{- range $origin, $count := .Stats.OriginCounts}}
-  <div class="card">
-    <div class="label">origin · {{$origin}}</div>
-    <div class="value">{{$count}}</div>
-  </div>
-  {{- end}}
-</div>
-
 <h2>Configuration</h2>
 <div class="stack">
-  <div class="card">
-    <div class="label">Library</div>
-    <div class="value">
-      {{- if .LibraryEnabled -}}
-        <span class="pill on">{{.LibraryMode}}</span>
-      {{- else -}}
-        <span class="pill off">off</span>
-      {{- end -}}
-    </div>
-  </div>
   <div class="card">
     <div class="label">Webhook receiver</div>
     <div class="value">
@@ -141,32 +96,17 @@
       {{- end -}}
     </div>
   </div>
-  <div class="card">
-    <div class="label">Mirror mode</div>
-    <div class="value">
-      {{- if .MirrorEnabled -}}
-        <span class="pill on">on</span>
-      {{- else -}}
-        <span class="pill off">off</span>
-      {{- end -}}
-    </div>
-  </div>
 </div>
 
 <h2>Recent activity</h2>
-{{if gt .Stats.HiddenFailedMirror 0}}
-<div style="background: var(--panel); padding: 8px 12px; border-radius: 4px; font-size: 12px; color: var(--fg-dim); margin-bottom: 8px;">
-  {{.Stats.HiddenFailedMirror}} failed mirror item{{if ne .Stats.HiddenFailedMirror 1}}s{{end}} hidden — TorBox-side errors on stale shared-account downloads, no action required.
-</div>
-{{end}}
 <table>
   <thead>
     <tr>
       <th>nzo_id</th>
       <th>state</th>
-      <th>library</th>
-      <th>origin</th>
+      <th>category</th>
       <th>folder</th>
+      <th>local path</th>
       <th>updated</th>
       <th>error</th>
     </tr>
@@ -176,9 +116,9 @@
     <tr>
       <td class="id">{{shortID .NzoID}}</td>
       <td class="state-{{.State}}">{{.State}}</td>
-      <td class="lib-{{.LibraryWriterState}}">{{.LibraryWriterState}}{{if gt .LibraryAttempts 0}} ({{.LibraryAttempts}}×){{end}}</td>
-      <td class="origin-{{.Origin}}">{{.Origin}}</td>
+      <td>{{.Category}}</td>
       <td class="path">{{ifEmpty .FolderName "—"}}</td>
+      <td class="path">{{ifEmpty .LocalPath "—"}}</td>
       <td>{{ago .UpdatedAt}}</td>
       <td class="err">{{.LastError}}</td>
     </tr>

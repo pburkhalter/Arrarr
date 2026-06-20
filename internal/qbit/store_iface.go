@@ -34,6 +34,10 @@ type JobStore interface {
 
 // storeAdapter wraps *store.Store to satisfy JobStore. Same pattern as
 // internal/sab/store_iface.go's storeAdapter.
+//
+// NOTE: the qbit shim stores BT info-hashes in the nzb_sha256 column. The
+// column name is a usenet artefact we keep to avoid a noisy rename migration —
+// renaming would touch indexes + scanJob + every reader.
 type storeAdapter struct{ s *store.Store }
 
 // Adapt returns a JobStore backed by the real *store.Store.
