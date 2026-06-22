@@ -16,9 +16,10 @@ type Store interface {
 }
 
 type Server struct {
-	apiKey  string
-	urlBase string
-	maxNZB  int64
+	apiKey      string
+	urlBase     string
+	maxNZB      int64
+	downloadDir string
 
 	store  Store
 	wake   chan<- struct{}
@@ -33,6 +34,12 @@ type Options struct {
 	APIKey      string
 	URLBase     string
 	MaxNZBBytes int64
+	// DownloadDir is the puller's DOWNLOAD_DIR, surfaced via SAB's
+	// /api?mode=get_config as `misc.complete_dir`. Sonarr/Radarr use this
+	// (with the per-category `dir`) to predict where a download will land,
+	// and run a docker-mount sanity check against it — so it must reflect
+	// the actual puller output, not a stale default.
+	DownloadDir string
 	Store       Store
 	Wake        chan<- struct{}
 	Logger      *slog.Logger
@@ -44,13 +51,14 @@ func NewServer(o Options) *Server {
 		o.Logger = slog.Default()
 	}
 	return &Server{
-		apiKey:  o.APIKey,
-		urlBase: o.URLBase,
-		maxNZB:  o.MaxNZBBytes,
-		store:   o.Store,
-		wake:    o.Wake,
-		logger:  o.Logger,
-		webhook: o.Webhook,
+		apiKey:      o.APIKey,
+		urlBase:     o.URLBase,
+		maxNZB:      o.MaxNZBBytes,
+		downloadDir: o.DownloadDir,
+		store:       o.Store,
+		wake:        o.Wake,
+		logger:      o.Logger,
+		webhook:     o.Webhook,
 	}
 }
 

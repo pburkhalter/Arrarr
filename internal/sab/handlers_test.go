@@ -40,6 +40,51 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 	return srv, st
 }
 
+// Sonarr/Radarr check `misc.complete_dir` + the per-category `dir` from
+// get_config to predict where downloads land, and fail every grab with
+// "downloadFailed" if that path doesn't match the puller's actual output.
+// Lock in: complete_dir reflects the configured DownloadDir, and the sonarr/
+// radarr category Dirs match the category name (puller does
+// path.Join(j.Category, …)).
+func TestGetConfigReportsDownloadDirAndCategoryNames(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(context.Background(), filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	srv := NewServer(Options{
+		APIKey:      "secret",
+		URLBase:     "/sabnzbd",
+		DownloadDir: "/downloads",
+		Store:       Adapt(st),
+		Logger:      slog.Default(),
+	})
+
+	r := httptest.NewRequest("GET", "/sabnzbd/api?mode=get_config&apikey=secret&output=json", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp GetConfigResp
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Config.Misc.CompleteDir != "/downloads" {
+		t.Errorf("complete_dir = %q, want /downloads", resp.Config.Misc.CompleteDir)
+	}
+	wantDirs := map[string]string{"sonarr": "sonarr", "radarr": "radarr", "tv": "tv", "movies": "movies"}
+	for _, c := range resp.Config.Categories {
+		if want, ok := wantDirs[c.Name]; ok && c.Dir != want {
+			t.Errorf("category %s dir=%q, want %q (must match puller's subdir naming)", c.Name, c.Dir, want)
+		}
+	}
+}
+
 // Sonarr/Radarr crash with "Unable to retrieve queue and history items" when
 // SAB returns "slots": null. Empty must serialize as "slots": [].
 func TestEmptyQueueAndHistorySlotsAreEmptyArrays(t *testing.T) {

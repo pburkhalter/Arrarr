@@ -135,6 +135,7 @@ func run() error {
 		APIKey:      cfg.APIKey,
 		URLBase:     cfg.URLBase,
 		MaxNZBBytes: cfg.MaxNZBBytes,
+		DownloadDir: cfg.DownloadDir,
 		Store:       sab.Adapt(st),
 		Wake:        wakeCh,
 		Logger:      log.With("component", "sab"),
