@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/pburkhalter/arrarr/internal/httpx"
 )
 
@@ -18,9 +20,18 @@ type Client struct {
 	BaseURL string
 	APIKey  string
 	HTTP    *http.Client
+
+	// createLimiter is a separate, much stricter bucket for the
+	// createusenetdownload/createtorrent endpoints. TorBox enforces a 60-per-
+	// hour ceiling there (returns 429 with "60 per 1 hour") independent of the
+	// general API rate limit. Without a dedicated bucket we burst dozens of
+	// NZBs from Sonarr's MissingEpisodeSearch into the same hour, hit 429s,
+	// and the submitter has to back off 5+ min per job — slow recovery and
+	// noisy logs. With the bucket the submitter naturally paces itself.
+	createLimiter *rate.Limiter
 }
 
-func NewClient(baseURL, apiKey string, perMin float64, timeout time.Duration) *Client {
+func NewClient(baseURL, apiKey string, perMin float64, createPerHour float64, timeout time.Duration) *Client {
 	if timeout <= 0 {
 		// 90s — TorBox's createusenetdownload regularly takes 20-60s under load,
 		// and a too-short timeout causes the response to be lost while the upload
@@ -28,10 +39,17 @@ func NewClient(baseURL, apiKey string, perMin float64, timeout time.Duration) *C
 		timeout = 90 * time.Second
 	}
 	transport := httpx.NewRateLimitTransport(http.DefaultTransport, perMin, 10)
+	if createPerHour <= 0 {
+		// TorBox's documented createusenetdownload limit is 60/hour. Default a
+		// touch under so a slow clock or shared-account scenario still has
+		// headroom before the server-side 429 fires.
+		createPerHour = 55
+	}
 	return &Client{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		APIKey:  apiKey,
-		HTTP:    &http.Client{Transport: transport, Timeout: timeout},
+		BaseURL:       strings.TrimRight(baseURL, "/"),
+		APIKey:        apiKey,
+		HTTP:          &http.Client{Transport: transport, Timeout: timeout},
+		createLimiter: rate.NewLimiter(rate.Limit(createPerHour/3600.0), int(createPerHour)),
 	}
 }
 
@@ -57,6 +75,9 @@ func (e *APIError) Retryable() bool {
 }
 
 func (c *Client) CreateUsenetDownload(ctx context.Context, filename string, nzb []byte, password string) (*CreateResp, error) {
+	if err := c.waitCreate(ctx); err != nil {
+		return nil, err
+	}
 	body, contentType, err := buildNZBMultipart(filename, nzb, password)
 	if err != nil {
 		return nil, err
@@ -74,6 +95,17 @@ func (c *Client) CreateUsenetDownload(ctx context.Context, filename string, nzb 
 		return nil, err
 	}
 	return &out, nil
+}
+
+// waitCreate blocks until the create-endpoint token bucket has capacity, or
+// the context is cancelled. Returns the context error so callers can stop
+// shutting down gracefully. nil createLimiter means "no per-endpoint limit"
+// (test fakes leave it unset).
+func (c *Client) waitCreate(ctx context.Context) error {
+	if c.createLimiter == nil {
+		return nil
+	}
+	return c.createLimiter.Wait(ctx)
 }
 
 func (c *Client) MyList(ctx context.Context, bypassCache bool) ([]MyListItem, error) {

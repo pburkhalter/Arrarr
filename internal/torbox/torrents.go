@@ -22,7 +22,12 @@ type CreateTorrentParams struct {
 }
 
 // CreateTorrentFromFile uploads a .torrent file. Returns the queued/active id like CreateUsenetDownload.
+// Shares the createLimiter with CreateUsenetDownload — TorBox's 60/hour
+// create-endpoint ceiling counts them together.
 func (c *Client) CreateTorrentFromFile(ctx context.Context, filename string, torrent []byte, p CreateTorrentParams) (*CreateResp, error) {
+	if err := c.waitCreate(ctx); err != nil {
+		return nil, err
+	}
 	body, contentType, err := buildTorrentMultipart(filename, torrent, "", p)
 	if err != nil {
 		return nil, err
@@ -44,6 +49,9 @@ func (c *Client) CreateTorrentFromFile(ctx context.Context, filename string, tor
 
 // CreateTorrentFromMagnet submits a magnet URI.
 func (c *Client) CreateTorrentFromMagnet(ctx context.Context, magnet string, p CreateTorrentParams) (*CreateResp, error) {
+	if err := c.waitCreate(ctx); err != nil {
+		return nil, err
+	}
 	// TorBox accepts multipart even for magnet — keeps one code path.
 	body, contentType, err := buildTorrentMultipart("", nil, magnet, p)
 	if err != nil {

@@ -70,7 +70,7 @@ func runVerifyWebhook() int {
 	if base == "" {
 		base = "https://api.torbox.app/v1/api"
 	}
-	client := torbox.NewClient(base, apiKey, 60, 30*time.Second)
+	client := torbox.NewClient(base, apiKey, 60, 0, 30*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := client.TestNotification(ctx); err != nil {
@@ -107,7 +107,7 @@ func run() error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
-	tb := torbox.NewClient(cfg.TorboxBaseURL, cfg.TorboxAPIKey, cfg.TorboxRateLimitPerMin, 30*time.Second)
+	tb := torbox.NewClient(cfg.TorboxBaseURL, cfg.TorboxAPIKey, cfg.TorboxRateLimitPerMin, cfg.TorboxCreatePerHour, 30*time.Second)
 
 	var pushoverClient *pushover.Client
 	if cfg.PushoverEnabled() {

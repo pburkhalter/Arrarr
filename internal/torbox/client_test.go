@@ -49,7 +49,7 @@ func TestCreateUsenetMIMEandAuth(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "supersecret", 1000, 5*time.Second)
+	c := NewClient(srv.URL, "supersecret", 1000, 0, 5*time.Second)
 	resp, err := c.CreateUsenetDownload(context.Background(), "Evil.S03E01.nzb", []byte("<nzb>"), "")
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ func TestMyListDualIDSwap(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "k", 1000, 5*time.Second)
+	c := NewClient(srv.URL, "k", 1000, 0, 5*time.Second)
 	got, err := c.MyList(context.Background(), true)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestRateLimit429SurfacesAPIError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "k", 1000, 5*time.Second)
+	c := NewClient(srv.URL, "k", 1000, 0, 5*time.Second)
 	_, err := c.MyList(context.Background(), false)
 	if err == nil {
 		t.Fatal("expected error")
@@ -134,6 +134,44 @@ func TestRateLimit429SurfacesAPIError(t *testing.T) {
 	}
 	if !apiErr.Retryable() {
 		t.Errorf("429 should be retryable")
+	}
+}
+
+// TestCreateLimiterThrottlesBursts verifies the per-endpoint create bucket
+// holds back the second CreateUsenetDownload when the limit is 1/hour. This
+// keeps the submitter from bursting NZBs into TorBox's 60/hour ceiling and
+// taking 429s for everything after the first.
+func TestCreateLimiterThrottlesBursts(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"success":true,"data":{"queue_id":1,"id":1}}`)
+	}))
+	defer srv.Close()
+
+	// createPerHour=1 → rate.Limit(1/3600) → fresh limiter has burst=1, so the
+	// second call must wait. Cap the wait with a short context so the test
+	// completes when the limiter blocks the second call as expected.
+	c := NewClient(srv.URL, "k", 1000, 1, 5*time.Second)
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel1()
+	if _, err := c.CreateUsenetDownload(ctx1, "first.nzb", []byte("dummy"), ""); err != nil {
+		t.Fatalf("first call should pass instantly: %v", err)
+	}
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel2()
+	_, err := c.CreateUsenetDownload(ctx2, "second.nzb", []byte("dummy"), "")
+	if err == nil {
+		t.Fatal("second call should have been blocked by the createLimiter")
+	}
+	// rate.Wait wraps the deadline as "rate: Wait(...) would exceed context
+	// deadline". Don't pin to a specific sentinel — the contract is just
+	// that the call did not reach the server.
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Errorf("server hit %d times, want 1 (limiter must not pass through)", hits)
 	}
 }
 
@@ -173,7 +211,7 @@ func TestEditUsenetSendsJSONBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "k", 1000, 5*time.Second)
+	c := NewClient(srv.URL, "k", 1000, 0, 5*time.Second)
 	name := "abc__release"
 	err := c.EditUsenet(context.Background(), 7, EditUsenetParams{
 		Name: &name,
@@ -219,7 +257,7 @@ func TestEditUsenetOmitsUnsetFields(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "k", 1000, 5*time.Second)
+	c := NewClient(srv.URL, "k", 1000, 0, 5*time.Second)
 	if err := c.EditUsenet(context.Background(), 11, EditUsenetParams{Tags: []string{"only-tags"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +294,7 @@ func TestRequestUsenetDLReturnsURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "tok", 1000, 5*time.Second)
+	c := NewClient(srv.URL, "tok", 1000, 0, 5*time.Second)
 	got, err := c.RequestUsenetDL(context.Background(), 42, 7, false)
 	if err != nil {
 		t.Fatal(err)
@@ -295,7 +333,7 @@ func TestTestNotificationFiresPOST(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "k", 1000, 5*time.Second)
+	c := NewClient(srv.URL, "k", 1000, 0, 5*time.Second)
 	if err := c.TestNotification(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +355,7 @@ func TestRequestUsenetDLZipLinkSetsParam(t *testing.T) {
 		_, _ = io.WriteString(w, `{"success":true,"data":"u"}`)
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "tok", 1000, 5*time.Second)
+	c := NewClient(srv.URL, "tok", 1000, 0, 5*time.Second)
 	_, _ = c.RequestUsenetDL(context.Background(), 1, 0, true)
 	if zipLink != "true" {
 		t.Errorf("zip_link=%q want true", zipLink)

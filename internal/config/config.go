@@ -18,6 +18,11 @@ type Config struct {
 	TorboxAPIKey          string  `env:"TORBOX_API_KEY,required"`
 	TorboxBaseURL         string  `env:"TORBOX_BASE_URL" envDefault:"https://api.torbox.app/v1/api"`
 	TorboxRateLimitPerMin float64 `env:"TORBOX_RATE_LIMIT_PER_MIN" envDefault:"200"`
+	// TorboxCreatePerHour throttles createusenetdownload + createtorrent
+	// requests independently of the global limiter. TorBox's documented ceiling
+	// is 60/hour; defaulting a touch under to leave headroom for clock skew
+	// and Recyclarr's separate calls.
+	TorboxCreatePerHour float64 `env:"TORBOX_CREATE_PER_HOUR" envDefault:"55"`
 
 	DBPath string `env:"DB_PATH" envDefault:"/data/arrarr.db"`
 
