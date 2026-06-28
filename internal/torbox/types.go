@@ -1,6 +1,9 @@
 package torbox
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type envelope struct {
 	Success bool            `json:"success"`
@@ -65,17 +68,23 @@ func (i *MyListItem) IsTerminal() bool {
 	if i.DownloadFinished {
 		return true
 	}
-	switch i.DownloadState {
-	case "completed", "cached", "uploading":
-		return true
-	}
-	return false
+	return hasAnyPrefix(i.DownloadState, "completed", "cached", "uploading")
 }
 
+// TorBox decorates terminal states with parenthesised detail
+// (e.g. "failed (Aborted, cannot be completed - https://sabnzbd.org/not-complete)"),
+// so match by prefix, not equality — exact match misses every annotated failure
+// and leaves the job stuck in DOWNLOADING forever.
 func (i *MyListItem) IsFailure() bool {
-	switch i.DownloadState {
-	case "failed", "error", "missing_files":
-		return true
+	return hasAnyPrefix(i.DownloadState, "failed", "error", "missing_files")
+}
+
+func hasAnyPrefix(s string, prefixes ...string) bool {
+	s = strings.ToLower(s)
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
 	}
 	return false
 }
