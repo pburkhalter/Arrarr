@@ -103,8 +103,17 @@ func (s *Server) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.torboxQuota != nil {
 		avail, burst := s.torboxQuota()
-		if avail >= 0 {
-			out.TorboxCreate = &torboxCreateJSON{Available: int(avail), Capacity: burst}
+		// burst == 0 signals "no limiter configured" (CreateHeadroom returns
+		// -1, 0). When a limiter exists, Tokens() can go negative under
+		// sustained create load — Wait() borrows against future refill — so
+		// floor Available at 0 instead of dropping the field, which would
+		// render as NaN in the dashboard widget.
+		if burst > 0 {
+			a := int(avail)
+			if a < 0 {
+				a = 0
+			}
+			out.TorboxCreate = &torboxCreateJSON{Available: a, Capacity: burst}
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
