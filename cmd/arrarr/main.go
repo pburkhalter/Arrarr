@@ -140,6 +140,7 @@ func run() error {
 		Wake:        wakeCh,
 		Logger:      log.With("component", "sab"),
 		Webhook:     webhookOpts,
+		TorboxQuota: tb.CreateHeadroom,
 	})
 
 	dl, err := downloader.New(downloader.Options{

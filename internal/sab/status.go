@@ -74,3 +74,38 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("status: template execute failed", "err", err)
 	}
 }
+
+// statusJSON is the machine-readable sibling of handleStatus, consumed by the
+// streaming dashboard's customapi widget. Unauthenticated, like handleStatus
+// and healthz — it exposes only aggregate counts, no secrets.
+type statusJSON struct {
+	GeneratedAt  time.Time         `json:"generated_at"`
+	States       map[string]int    `json:"states"`
+	TorboxCreate *torboxCreateJSON `json:"torbox_create,omitempty"`
+}
+
+// torboxCreateJSON reports the createusenetdownload rate-limiter headroom.
+// Available is floored to a whole token (the bucket refills continuously).
+type torboxCreateJSON struct {
+	Available int `json:"available"`
+	Capacity  int `json:"capacity"`
+}
+
+func (s *Server) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
+	stats, err := s.store.FetchStats(r.Context(), 0)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "stats unavailable: "+err.Error())
+		return
+	}
+	out := statusJSON{
+		GeneratedAt: time.Now().UTC(),
+		States:      stats.StateCounts,
+	}
+	if s.torboxQuota != nil {
+		avail, burst := s.torboxQuota()
+		if avail >= 0 {
+			out.TorboxCreate = &torboxCreateJSON{Available: int(avail), Capacity: burst}
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}

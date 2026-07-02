@@ -108,6 +108,17 @@ func (c *Client) waitCreate(ctx context.Context) error {
 	return c.createLimiter.Wait(ctx)
 }
 
+// CreateHeadroom reports the createusenetdownload token bucket's currently
+// available tokens and its burst ceiling, for status/monitoring surfaces.
+// avail is -1 when no limiter is configured (test fakes). It is a float
+// because tokens refill continuously; callers rendering a count should floor it.
+func (c *Client) CreateHeadroom() (avail float64, burst int) {
+	if c.createLimiter == nil {
+		return -1, 0
+	}
+	return c.createLimiter.Tokens(), c.createLimiter.Burst()
+}
+
 func (c *Client) MyList(ctx context.Context, bypassCache bool) ([]MyListItem, error) {
 	q := url.Values{}
 	if bypassCache {

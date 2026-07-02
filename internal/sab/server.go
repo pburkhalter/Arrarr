@@ -28,6 +28,11 @@ type Server struct {
 	// webhook is set when ARRARR_TORBOX_WEBHOOK_SECRET is configured. nil
 	// means the webhook receiver is disabled and returns 503.
 	webhook *WebhookOptions
+
+	// torboxQuota reports the createusenetdownload token bucket's available
+	// tokens and burst ceiling, for /status.json. nil → omitted from the
+	// payload (e.g. test fakes with no TorBox client).
+	torboxQuota func() (avail float64, burst int)
 }
 
 type Options struct {
@@ -44,6 +49,9 @@ type Options struct {
 	Wake        chan<- struct{}
 	Logger      *slog.Logger
 	Webhook     *WebhookOptions
+	// TorboxQuota, when set, exposes the create-endpoint rate-limiter
+	// headroom on /status.json. Wire it to (*torbox.Client).CreateHeadroom.
+	TorboxQuota func() (avail float64, burst int)
 }
 
 func NewServer(o Options) *Server {
@@ -59,6 +67,7 @@ func NewServer(o Options) *Server {
 		wake:        o.Wake,
 		logger:      o.Logger,
 		webhook:     o.Webhook,
+		torboxQuota: o.TorboxQuota,
 	}
 }
 
@@ -70,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("/api", s.handleAPI)
 	api.Get("/healthz", s.handleHealthz)
 	api.Post("/webhook", s.handleTorBoxWebhook)
+	api.Get("/status.json", s.handleStatusJSON)
 	api.Get("/", s.handleStatus)
 
 	if s.urlBase == "" {
