@@ -157,12 +157,13 @@ func (m *Manager) handlePollMissing(ctx context.Context, j *job.Job) {
 	if time.Since(j.CreatedAt) < grace {
 		return
 	}
-	if time.Since(j.UpdatedAt) > MaxPollDuration {
-		m.log.Warn("poll: vanished from torbox", "nzo_id", j.NzoID, "age", time.Since(j.CreatedAt))
+	if time.Since(j.UpdatedAt) > MaxMissingDuration {
+		m.log.Warn("poll: vanished from torbox",
+			"nzo_id", j.NzoID, "age", time.Since(j.CreatedAt), "idle", time.Since(j.UpdatedAt))
 		_ = m.o.Store.Transition(ctx, j.NzoID, store.Transition{
 			From:        j.State,
 			To:          job.StateFailed,
-			LastError:   strPtr("torbox lost the download"),
+			LastError:   strPtr("torbox lost the download (absent from mylist)"),
 			CompletedAt: nowPtr(),
 		})
 	}

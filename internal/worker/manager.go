@@ -14,6 +14,15 @@ import (
 const MaxSubmitAttempts = 5
 const MaxPollDuration = 24 * time.Hour
 
+// MaxMissingDuration bounds how long a job may be absent from TorBox's mylist
+// before we treat it as lost and fail it. TorBox silently drops downloads it
+// can't complete (e.g. German-dubbed usenet releases with missing articles),
+// leaving them at 0 bytes and never emitting a terminal download_state. Without
+// this, such a job would linger in DOWNLOADING until MaxPollDuration (24h),
+// holding a TorBox active-download slot the whole time and starving the NEW
+// backlog behind the account's concurrency limit.
+const MaxMissingDuration = 15 * time.Minute
+
 // torboxClient is the slice of torbox.Client the worker loops actually use.
 // Kept narrow so tests can stand up in-memory fakes.
 type torboxClient interface {

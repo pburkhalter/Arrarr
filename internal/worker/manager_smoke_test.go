@@ -285,6 +285,92 @@ func TestPollerNameFallbackForZeroIDs(t *testing.T) {
 	}
 }
 
+// TestPollerVanishedJobFails covers the case where TorBox silently drops a
+// download from mylist (0-byte German-dubbed usenet releases it can't complete).
+// A job absent past MaxMissingDuration must fail; one seen recently must not.
+func TestPollerVanishedJobFails(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(context.Background(), filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(Options{
+		Store:  st,
+		Torbox: &emptyMyListTorbox{},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	insert := func(nzo string, updatedAgo time.Duration) {
+		j := &job.Job{
+			NzoID: nzo, Category: "sonarr", Filename: nzo + ".nzb",
+			NzbSHA256: nzo, NzbBlob: []byte("nzb"), State: job.StateDownloading,
+		}
+		if err := st.Insert(context.Background(), j); err != nil {
+			t.Fatal(err)
+		}
+		// Backdate: created long ago (past grace), updated_at controls the timeout.
+		if _, err := st.DB().ExecContext(context.Background(),
+			`UPDATE jobs SET state='DOWNLOADING', created_at=datetime('now','-2 hours'),
+			 updated_at=datetime('now', ?) WHERE nzo_id=?`,
+			"-"+strconv.Itoa(int(updatedAgo.Seconds()))+" seconds", nzo); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	insert("arrarr_vanished", MaxMissingDuration+time.Hour) // idle well past timeout
+	insert("arrarr_recent", time.Minute)                    // seen a minute ago
+
+	mgr.pollOnce(context.Background())
+
+	gone, err := st.Get(context.Background(), "arrarr_vanished")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gone.State != job.StateFailed {
+		t.Errorf("vanished job: state=%s want FAILED", gone.State)
+	}
+
+	recent, err := st.Get(context.Background(), "arrarr_recent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recent.State != job.StateDownloading {
+		t.Errorf("recently-seen job: state=%s want DOWNLOADING (must not fail early)", recent.State)
+	}
+}
+
+// emptyMyListTorbox returns an empty mylist so every polled job is "missing".
+type emptyMyListTorbox struct{}
+
+func (emptyMyListTorbox) CreateUsenetDownload(_ context.Context, _ string, _ []byte, _ string) (*torbox.CreateResp, error) {
+	return &torbox.CreateResp{}, nil
+}
+func (emptyMyListTorbox) CreateTorrentFromFile(_ context.Context, _ string, _ []byte, _ torbox.CreateTorrentParams) (*torbox.CreateResp, error) {
+	return &torbox.CreateResp{}, nil
+}
+func (emptyMyListTorbox) CreateTorrentFromMagnet(_ context.Context, _ string, _ torbox.CreateTorrentParams) (*torbox.CreateResp, error) {
+	return &torbox.CreateResp{}, nil
+}
+func (emptyMyListTorbox) MyList(_ context.Context, _ bool) ([]torbox.MyListItem, error) {
+	return nil, nil
+}
+func (emptyMyListTorbox) MyListTorrents(_ context.Context, _ bool) ([]torbox.MyListItem, error) {
+	return nil, nil
+}
+func (emptyMyListTorbox) ControlUsenet(_ context.Context, _ int64, _ string) error  { return nil }
+func (emptyMyListTorbox) ControlTorrent(_ context.Context, _ int64, _ string) error { return nil }
+func (emptyMyListTorbox) RequestUsenetDL(_ context.Context, _, _ int64, _ bool) (string, error) {
+	return "", nil
+}
+func (emptyMyListTorbox) RequestTorrentDL(_ context.Context, _, _ int64, _ bool) (string, error) {
+	return "", nil
+}
+
 // rateLimitedTorbox always returns 429 on create.
 type rateLimitedTorbox struct{}
 
