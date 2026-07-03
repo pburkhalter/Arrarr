@@ -141,6 +141,19 @@ func (m *Manager) applyMyListItem(ctx context.Context, j *job.Job, it *torbox.My
 			To:   job.StateDownloading,
 		})
 	}
+	if strings.EqualFold(it.DownloadState, "downloading") &&
+		it.Progress == 0 && it.DownloadSpeed == 0 &&
+		time.Since(j.CreatedAt) > MaxStallDuration {
+		m.log.Warn("poll: torbox stalled at 0%",
+			"nzo_id", j.NzoID, "age", time.Since(j.CreatedAt))
+		_ = m.o.Store.Transition(ctx, j.NzoID, store.Transition{
+			From:        j.State,
+			To:          job.StateFailed,
+			LastError:   strPtr("torbox stalled: no progress (missing usenet articles)"),
+			CompletedAt: nowPtr(),
+		})
+		return
+	}
 	if time.Since(j.CreatedAt) > MaxPollDuration {
 		m.log.Warn("poll: timeout reached", "nzo_id", j.NzoID, "age", time.Since(j.CreatedAt))
 		_ = m.o.Store.Transition(ctx, j.NzoID, store.Transition{

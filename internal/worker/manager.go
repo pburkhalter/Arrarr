@@ -23,6 +23,18 @@ const MaxPollDuration = 24 * time.Hour
 // backlog behind the account's concurrency limit.
 const MaxMissingDuration = 15 * time.Minute
 
+// MaxStallDuration bounds how long a job may sit at download_state="downloading"
+// with zero progress and zero speed before we treat it as dead and fail it.
+// TorBox reports this state for releases whose usenet articles are missing or
+// incomplete (common for older German-dubbed content, and unavoidable here since
+// the pipeline has a single usenet indexer with no fallback). Such a job never
+// reaches a terminal state on its own — unlike a vanished one it stays present in
+// mylist — so [[arrarr_failed_state_detection]]'s MaxMissingDuration reaper never
+// catches it, and it would hold an ACTIVE_LIMIT slot until MaxPollDuration (24h).
+// Failing it early frees the slot and surfaces a Failed history entry so Sonarr
+// blocklists the dead release instead of re-grabbing it into the same stall.
+const MaxStallDuration = 30 * time.Minute
+
 // torboxClient is the slice of torbox.Client the worker loops actually use.
 // Kept narrow so tests can stand up in-memory fakes.
 type torboxClient interface {

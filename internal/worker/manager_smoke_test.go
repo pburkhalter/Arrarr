@@ -344,6 +344,94 @@ func TestPollerVanishedJobFails(t *testing.T) {
 	}
 }
 
+// TestPollerStalledJobFails covers a job that stays present in mylist but sits at
+// download_state="downloading" with 0 progress / 0 speed (missing usenet
+// articles). Past MaxStallDuration it must fail; a fresh one at 0% must not.
+func TestPollerStalledJobFails(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(context.Background(), filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(Options{
+		Store:  st,
+		Torbox: &stalledMyListTorbox{},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	insert := func(nzo string, createdAgo time.Duration) {
+		j := &job.Job{
+			NzoID: nzo, Category: "sonarr", Filename: nzo + ".nzb",
+			NzbSHA256: nzo, NzbBlob: []byte("nzb"), State: job.StateDownloading,
+		}
+		if err := st.Insert(context.Background(), j); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.DB().ExecContext(context.Background(),
+			`UPDATE jobs SET state='DOWNLOADING', created_at=datetime('now', ?) WHERE nzo_id=?`,
+			"-"+strconv.Itoa(int(createdAgo.Seconds()))+" seconds", nzo); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	insert("arrarr_stalled", MaxStallDuration+time.Hour) // stuck at 0% well past timeout
+	insert("arrarr_young", time.Minute)                  // just started, also at 0%
+
+	mgr.pollOnce(context.Background())
+
+	stalled, err := st.Get(context.Background(), "arrarr_stalled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stalled.State != job.StateFailed {
+		t.Errorf("stalled job: state=%s want FAILED", stalled.State)
+	}
+
+	young, err := st.Get(context.Background(), "arrarr_young")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if young.State != job.StateDownloading {
+		t.Errorf("young job: state=%s want DOWNLOADING (must not fail early)", young.State)
+	}
+}
+
+// stalledMyListTorbox reports both polled jobs as downloading at 0% / 0 speed,
+// matched by folder name (filename minus .nzb).
+type stalledMyListTorbox struct{}
+
+func (stalledMyListTorbox) CreateUsenetDownload(_ context.Context, _ string, _ []byte, _ string) (*torbox.CreateResp, error) {
+	return &torbox.CreateResp{}, nil
+}
+func (stalledMyListTorbox) CreateTorrentFromFile(_ context.Context, _ string, _ []byte, _ torbox.CreateTorrentParams) (*torbox.CreateResp, error) {
+	return &torbox.CreateResp{}, nil
+}
+func (stalledMyListTorbox) CreateTorrentFromMagnet(_ context.Context, _ string, _ torbox.CreateTorrentParams) (*torbox.CreateResp, error) {
+	return &torbox.CreateResp{}, nil
+}
+func (stalledMyListTorbox) MyList(_ context.Context, _ bool) ([]torbox.MyListItem, error) {
+	return []torbox.MyListItem{
+		{Name: "arrarr_stalled", DownloadState: "downloading", Progress: 0, DownloadSpeed: 0},
+		{Name: "arrarr_young", DownloadState: "downloading", Progress: 0, DownloadSpeed: 0},
+	}, nil
+}
+func (stalledMyListTorbox) MyListTorrents(_ context.Context, _ bool) ([]torbox.MyListItem, error) {
+	return nil, nil
+}
+func (stalledMyListTorbox) ControlUsenet(_ context.Context, _ int64, _ string) error  { return nil }
+func (stalledMyListTorbox) ControlTorrent(_ context.Context, _ int64, _ string) error { return nil }
+func (stalledMyListTorbox) RequestUsenetDL(_ context.Context, _, _ int64, _ bool) (string, error) {
+	return "", nil
+}
+func (stalledMyListTorbox) RequestTorrentDL(_ context.Context, _, _ int64, _ bool) (string, error) {
+	return "", nil
+}
+
 // emptyMyListTorbox returns an empty mylist so every polled job is "missing".
 type emptyMyListTorbox struct{}
 
