@@ -151,6 +151,7 @@ func run() error {
 		Logger:      log.With("component", "sab"),
 		Webhook:     webhookOpts,
 		TorboxQuota: tb.CreateHeadroom,
+		Version:     versionStr,
 	})
 
 	dl, err := downloader.New(downloader.Options{

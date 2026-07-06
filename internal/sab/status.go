@@ -80,6 +80,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // and healthz — it exposes only aggregate counts, no secrets.
 type statusJSON struct {
 	GeneratedAt  time.Time         `json:"generated_at"`
+	Version      string            `json:"version,omitempty"`
 	States       map[string]int    `json:"states"`
 	TorboxCreate *torboxCreateJSON `json:"torbox_create,omitempty"`
 }
@@ -99,6 +100,7 @@ func (s *Server) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	out := statusJSON{
 		GeneratedAt: time.Now().UTC(),
+		Version:     s.version,
 		States:      stats.StateCounts,
 	}
 	if s.torboxQuota != nil {

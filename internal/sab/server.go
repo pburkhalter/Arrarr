@@ -21,9 +21,10 @@ type Server struct {
 	maxNZB      int64
 	downloadDir string
 
-	store  Store
-	wake   chan<- struct{}
-	logger *slog.Logger
+	store   Store
+	wake    chan<- struct{}
+	logger  *slog.Logger
+	version string
 
 	// webhook is set when ARRARR_TORBOX_WEBHOOK_SECRET is configured. nil
 	// means the webhook receiver is disabled and returns 503.
@@ -49,6 +50,9 @@ type Options struct {
 	Wake        chan<- struct{}
 	Logger      *slog.Logger
 	Webhook     *WebhookOptions
+	// Version is the running arrarr build (main.versionStr), surfaced on
+	// /status.json so an external monitor can display it and check for updates.
+	Version string
 	// TorboxQuota, when set, exposes the create-endpoint rate-limiter
 	// headroom on /status.json. Wire it to (*torbox.Client).CreateHeadroom.
 	TorboxQuota func() (avail float64, burst int)
@@ -68,6 +72,7 @@ func NewServer(o Options) *Server {
 		logger:      o.Logger,
 		webhook:     o.Webhook,
 		torboxQuota: o.TorboxQuota,
+		version:     o.Version,
 	}
 }
 
