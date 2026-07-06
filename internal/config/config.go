@@ -58,7 +58,17 @@ type Config struct {
 	PushoverToken    string `env:"ARRARR_PUSHOVER_TOKEN"`
 	PushoverUser     string `env:"ARRARR_PUSHOVER_USER"`
 	PushoverNotifyOn string `env:"ARRARR_PUSHOVER_NOTIFY_ON" envDefault:"off"`
+
+	// Outbound events: POST a webhook on every job state transition so an
+	// external tracker (Journarr) can mirror the TorBox substages. Empty URL
+	// disables it. Fire-and-forget — never affects the state machine.
+	EventsURL     string        `env:"ARRARR_EVENTS_URL"`
+	EventsToken   string        `env:"ARRARR_EVENTS_TOKEN"`
+	EventsTimeout time.Duration `env:"ARRARR_EVENTS_TIMEOUT" envDefault:"5s"`
 }
+
+// EventsEnabled reports whether the outbound transition-events emitter runs.
+func (c *Config) EventsEnabled() bool { return c.EventsURL != "" }
 
 // PushoverNotifyValues are the legal values for ARRARR_PUSHOVER_NOTIFY_ON.
 var PushoverNotifyValues = map[string]bool{"off": true, "ready": true, "failed": true, "both": true}

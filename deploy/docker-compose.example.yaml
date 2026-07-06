@@ -18,6 +18,11 @@ services:
       DB_PATH: /data/arrarr.db
       LOG_LEVEL: info
       LOG_FORMAT: json
+      # Outbound events (optional): POST every job state transition to a
+      # tracker (Journarr) so it can mirror the TorBox substages. Empty URL
+      # disables it. Fire-and-forget — never affects the state machine.
+      # ARRARR_EVENTS_URL: http://192.168.0.203:8484/webhook/arrarr
+      # ARRARR_EVENTS_TOKEN: ${JOURNARR_WEBHOOK_TOKEN}
     volumes:
       - /opt/docker-data/arrarr:/data
       - /mnt/downloads:/downloads

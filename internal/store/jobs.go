@@ -61,7 +61,11 @@ func (s *Store) MarkLocalReady(ctx context.Context, nzoID, localPath string, byt
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrInvalidTransition
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.fireTransition(nzoID, "COMPLETED_TORBOX", "READY")
+	return nil
 }
 
 func (s *Store) Get(ctx context.Context, nzoID string) (*job.Job, error) {
@@ -212,6 +216,7 @@ func (s *Store) Transition(ctx context.Context, nzoID string, t Transition) erro
 	if rows == 0 {
 		return ErrInvalidTransition
 	}
+	s.fireTransition(nzoID, string(t.From), string(t.To))
 	return nil
 }
 

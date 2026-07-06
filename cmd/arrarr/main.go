@@ -13,6 +13,7 @@ import (
 
 	"github.com/pburkhalter/arrarr/internal/config"
 	"github.com/pburkhalter/arrarr/internal/downloader"
+	"github.com/pburkhalter/arrarr/internal/events"
 	"github.com/pburkhalter/arrarr/internal/logger"
 	"github.com/pburkhalter/arrarr/internal/pushover"
 	"github.com/pburkhalter/arrarr/internal/qbit"
@@ -113,6 +114,15 @@ func run() error {
 	if cfg.PushoverEnabled() {
 		pushoverClient = pushover.New(cfg.PushoverToken, cfg.PushoverUser, 6*time.Second)
 		log.Info("pushover enabled", "notify_on", cfg.PushoverNotifyOn)
+	}
+
+	// Outbound transition events (optional). Fire-and-forget; wired into the
+	// store so every Transition/MarkLocalReady success emits.
+	if cfg.EventsEnabled() {
+		emitter := events.New(cfg.EventsURL, cfg.EventsToken, cfg.EventsTimeout, st.Get, log.With("component", "events"))
+		st.SetTransitionHook(emitter.Enqueue)
+		go emitter.Run(rootCtx)
+		log.Info("outbound events enabled", "url", cfg.EventsURL)
 	}
 
 	var webhookOpts *sab.WebhookOptions

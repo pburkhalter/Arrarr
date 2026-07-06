@@ -12,6 +12,21 @@ import (
 
 type Store struct {
 	db *sql.DB
+	// onTransition, if set, is called after every successful state change
+	// (via Transition or MarkLocalReady). It must be non-blocking — the
+	// events emitter enqueues and returns. Never affects the state machine.
+	onTransition func(nzoID, from, to string)
+}
+
+// SetTransitionHook installs the outbound-events callback (optional).
+func (s *Store) SetTransitionHook(fn func(nzoID, from, to string)) {
+	s.onTransition = fn
+}
+
+func (s *Store) fireTransition(nzoID, from, to string) {
+	if s.onTransition != nil {
+		s.onTransition(nzoID, from, to)
+	}
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
