@@ -167,6 +167,24 @@ SQLite schema lives in `internal/store/migrations/`. Migrations run
 automatically on startup. Schema requires SQLite ≥ 3.35 (for
 `UPDATE … RETURNING` + `ALTER TABLE DROP COLUMN`).
 
+### Releasing
+
+Push a `vX.Y.Z` git tag. **The published image tag drops the `v`** —
+`docker/metadata-action`'s `{{version}}` pattern emits `X.Y.Z`, so git tag
+`v3.1.5` publishes `ghcr.io/pburkhalter/arrarr:3.1.5` (plus `X.Y` and, on
+`main`, `latest` and `sha-<short>`). Deploying `:v3.1.5` fails with
+`manifest unknown` and leaves the container stopped — the error only surfaces
+in the orchestrator's log, not in arrarr's. Confirm a tag exists before
+rolling it out:
+
+```
+curl -s "https://ghcr.io/token?scope=repository:pburkhalter/arrarr:pull&service=ghcr.io" \
+  | jq -r .token \
+  | xargs -I{} curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer {}" \
+      -H 'Accept: application/vnd.oci.image.index.v1+json' \
+      https://ghcr.io/v2/pburkhalter/arrarr/manifests/3.1.5
+```
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
