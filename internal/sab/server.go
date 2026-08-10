@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -34,6 +35,10 @@ type Server struct {
 	// tokens and burst ceiling, for /status.json. nil → omitted from the
 	// payload (e.g. test fakes with no TorBox client).
 	torboxQuota func() (avail float64, burst int)
+
+	// pollHealth reports the worker poller's last successful pass and last
+	// error, for /status.json. nil → omitted from the payload.
+	pollHealth func() (lastOK time.Time, lastErr string)
 }
 
 type Options struct {
@@ -56,6 +61,9 @@ type Options struct {
 	// TorboxQuota, when set, exposes the create-endpoint rate-limiter
 	// headroom on /status.json. Wire it to (*torbox.Client).CreateHeadroom.
 	TorboxQuota func() (avail float64, burst int)
+	// PollHealth, when set, exposes poller liveness on /status.json. Wire it to
+	// (*worker.Manager).PollHealth.
+	PollHealth func() (lastOK time.Time, lastErr string)
 }
 
 func NewServer(o Options) *Server {
@@ -72,6 +80,7 @@ func NewServer(o Options) *Server {
 		logger:      o.Logger,
 		webhook:     o.Webhook,
 		torboxQuota: o.TorboxQuota,
+		pollHealth:  o.PollHealth,
 		version:     o.Version,
 	}
 }

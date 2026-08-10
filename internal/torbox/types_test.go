@@ -14,6 +14,11 @@ func TestIsFailureMatchesAnnotatedStates(t *testing.T) {
 		{"error (timed out)", true},
 		{"missing_files", true},
 		{"missing_files (3 of 12)", true},
+		// Retention lapsed: the mylist entry survives but the files are gone, so
+		// the puller can never fetch it — fail fast instead of holding a slot
+		// for the full 24h MaxPollDuration.
+		{"expired", true},
+		{"EXPIRED", true},
 		{"downloading", false},
 		{"completed", false},
 		{"queued", false},

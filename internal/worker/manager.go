@@ -69,6 +69,41 @@ type Options struct {
 type Manager struct {
 	o   Options
 	log *slog.Logger
+
+	// pollMu guards the poll-health fields below, read from the HTTP server's
+	// goroutines via PollHealth and written by the poller loop.
+	pollMu      sync.Mutex
+	lastPollOK  time.Time
+	lastPollErr string
+}
+
+// PollHealth reports when the poller last completed a full pass and the error
+// from the most recent failed pass (empty string when the last pass succeeded).
+// A zero lastOK means no pass has ever succeeded since start-up.
+//
+// This exists because a persistently failing poll is otherwise invisible: every
+// transition out of SUBMITTED/DOWNLOADING — including all the failure reapers —
+// sits behind the TorBox MyList call, so when that call breaks, jobs simply
+// stop moving and nothing in the job table indicates why. Surfacing it on
+// /status.json lets Journarr and the NAS healthcheck alarm on a stalled poller
+// instead of waiting for someone to notice missing downloads.
+func (m *Manager) PollHealth() (lastOK time.Time, lastErr string) {
+	m.pollMu.Lock()
+	defer m.pollMu.Unlock()
+	return m.lastPollOK, m.lastPollErr
+}
+
+// recordPoll stamps the outcome of one poll pass. A nil err marks the pass
+// successful and clears any previous error.
+func (m *Manager) recordPoll(err error) {
+	m.pollMu.Lock()
+	defer m.pollMu.Unlock()
+	if err != nil {
+		m.lastPollErr = describe(err)
+		return
+	}
+	m.lastPollOK = time.Now().UTC()
+	m.lastPollErr = ""
 }
 
 func New(o Options) *Manager {

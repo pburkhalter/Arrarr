@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -190,6 +191,74 @@ func TestEnvelopeDecode(t *testing.T) {
 	}
 	if c.ID != 42 || c.QueueID != 7 {
 		t.Errorf("decoded=%+v", c)
+	}
+}
+
+// mylistBody builds a /usenet/mylist envelope with n entries, padded so the
+// whole response lands near TorBox's real ~5 KB-per-entry weight.
+func mylistBody(n int) string {
+	var b strings.Builder
+	b.WriteString(`{"success":true,"error":null,"detail":"ok","data":[`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, `{"id":%d,"name":"Release.S01E%02d","download_state":"completed","files":[{"id":%d,"short_name":"%s"}]}`,
+			i+1, i%100, i+1, strings.Repeat("p", 4800))
+	}
+	b.WriteString(`]}`)
+	return b.String()
+}
+
+// A usenet mylist grows with account history and crossed the old 4 MiB read cap
+// in Aug 2026 (1001 entries, 4.89 MiB). The body was silently clipped mid-JSON,
+// every poll failed with "unexpected end of JSON input", and because pollOnce
+// bails on that error no job left SUBMITTED for six days.
+func TestMyListDecodesBodyLargerThanOldCap(t *testing.T) {
+	const entries = 1200
+	body := mylistBody(entries)
+	if len(body) <= 4<<20 {
+		t.Fatalf("fixture is %d bytes, must exceed the old 4 MiB cap to be a regression test", len(body))
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "k", 1000, 0, 30*time.Second)
+	items, err := c.MyList(context.Background(), true)
+	if err != nil {
+		t.Fatalf("MyList on a %d-byte body: %v", len(body), err)
+	}
+	if len(items) != entries {
+		t.Errorf("got %d items, want %d", len(items), entries)
+	}
+}
+
+// Past the cap we must say so plainly. Letting a clipped body reach the JSON
+// decoder produces "unexpected end of JSON input", which reads like a TorBox
+// fault and sends the next person debugging in the wrong direction.
+func TestOversizedBodyReportsTruncationNotJSONError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Valid JSON prefix, then more than the cap allows — so a truncating
+		// reader would fail with a decode error rather than this explicit one.
+		_, _ = io.WriteString(w, `{"success":true,"data":[`)
+		chunk := strings.Repeat("x", 1<<20)
+		for written := 0; written <= maxBodyBytes; written += len(chunk) {
+			_, _ = io.WriteString(w, chunk)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "k", 1000, 0, 60*time.Second)
+	_, err := c.MyList(context.Background(), true)
+	if err == nil {
+		t.Fatal("want an error for an oversized body")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error %q should name the size limit, not surface as a JSON decode failure", err)
 	}
 }
 

@@ -141,19 +141,6 @@ func run() error {
 
 	wakeCh := make(chan struct{}, 1)
 
-	srv := sab.NewServer(sab.Options{
-		APIKey:      cfg.APIKey,
-		URLBase:     cfg.URLBase,
-		MaxNZBBytes: cfg.MaxNZBBytes,
-		DownloadDir: cfg.DownloadDir,
-		Store:       sab.Adapt(st),
-		Wake:        wakeCh,
-		Logger:      log.With("component", "sab"),
-		Webhook:     webhookOpts,
-		TorboxQuota: tb.CreateHeadroom,
-		Version:     versionStr,
-	})
-
 	dl, err := downloader.New(downloader.Options{
 		BaseDir:     cfg.DownloadDir,
 		Concurrency: cfg.DownloadConcurrency,
@@ -182,6 +169,23 @@ func run() error {
 		ReapOlderThan:  time.Duration(cfg.JobRetentionDays) * 24 * time.Hour,
 		WorkerPoolSize: cfg.WorkerPoolSize,
 		Puller:         puller,
+	})
+
+	// Built after the worker so /status.json can report poller liveness — a
+	// stalled poll loop freezes every job transition while state counts and
+	// container health still look fine.
+	srv := sab.NewServer(sab.Options{
+		APIKey:      cfg.APIKey,
+		URLBase:     cfg.URLBase,
+		MaxNZBBytes: cfg.MaxNZBBytes,
+		DownloadDir: cfg.DownloadDir,
+		Store:       sab.Adapt(st),
+		Wake:        wakeCh,
+		Logger:      log.With("component", "sab"),
+		Webhook:     webhookOpts,
+		TorboxQuota: tb.CreateHeadroom,
+		PollHealth:  wm.PollHealth,
+		Version:     versionStr,
 	})
 
 	// Multiplex sab + qbit on one listener. sab.Handler() routes /sabnzbd/*

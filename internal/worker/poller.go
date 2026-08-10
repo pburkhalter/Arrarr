@@ -28,15 +28,19 @@ func (m *Manager) pollOnce(ctx context.Context) {
 		[]job.State{job.StateSubmitted, job.StateDownloading}, 1000)
 	if err != nil {
 		m.log.Error("poll: list failed", "err", err)
+		m.recordPoll(err)
 		return
 	}
 	if len(inflight) == 0 {
+		// Nothing in flight: the pass is complete and no job can be stuck.
+		m.recordPoll(nil)
 		return
 	}
 
 	usenetItems, err := m.o.Torbox.MyList(ctx, true)
 	if err != nil {
 		m.log.Error("poll: mylist (usenet) failed", "err", describe(err))
+		m.recordPoll(err)
 		return
 	}
 	torrentItems, terr := m.o.Torbox.MyListTorrents(ctx, true)
@@ -83,6 +87,7 @@ func (m *Manager) pollOnce(ctx context.Context) {
 		}
 		m.applyMyListItem(ctx, j, item)
 	}
+	m.recordPoll(nil)
 }
 
 func indexByID(items []torbox.MyListItem) map[int64]*torbox.MyListItem {

@@ -83,6 +83,18 @@ type statusJSON struct {
 	Version      string            `json:"version,omitempty"`
 	States       map[string]int    `json:"states"`
 	TorboxCreate *torboxCreateJSON `json:"torbox_create,omitempty"`
+	Poller       *pollerJSON       `json:"poller,omitempty"`
+}
+
+// pollerJSON reports whether the TorBox poll loop is actually making passes.
+// Every job transition out of SUBMITTED/DOWNLOADING depends on it, so a poller
+// that has been failing for hours means the whole pipeline is frozen even
+// though every state count and container healthcheck still looks normal.
+// SecondsSinceOK is the field to alarm on; LastError says why it broke.
+type pollerJSON struct {
+	LastOK         *time.Time `json:"last_ok,omitempty"`
+	SecondsSinceOK *int64     `json:"seconds_since_ok,omitempty"`
+	LastError      string     `json:"last_error,omitempty"`
 }
 
 // torboxCreateJSON reports the createusenetdownload rate-limiter headroom.
@@ -117,6 +129,16 @@ func (s *Server) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
 			}
 			out.TorboxCreate = &torboxCreateJSON{Available: a, Capacity: burst}
 		}
+	}
+	if s.pollHealth != nil {
+		lastOK, lastErr := s.pollHealth()
+		p := &pollerJSON{LastError: lastErr}
+		if !lastOK.IsZero() {
+			t := lastOK
+			secs := int64(time.Since(t).Seconds())
+			p.LastOK, p.SecondsSinceOK = &t, &secs
+		}
+		out.Poller = p
 	}
 	writeJSON(w, http.StatusOK, out)
 }

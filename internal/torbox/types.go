@@ -75,8 +75,13 @@ func (i *MyListItem) IsTerminal() bool {
 // (e.g. "failed (Aborted, cannot be completed - https://sabnzbd.org/not-complete)"),
 // so match by prefix, not equality — exact match misses every annotated failure
 // and leaves the job stuck in DOWNLOADING forever.
+//
+// "expired" counts as a failure: TorBox keeps the list entry after retention
+// lapses but the files are gone, so the puller can never fetch it. Without this
+// the item is neither a failure nor terminal, and the job burns the full
+// MaxPollDuration (24h) holding an active slot before timing out.
 func (i *MyListItem) IsFailure() bool {
-	return hasAnyPrefix(i.DownloadState, "failed", "error", "missing_files")
+	return hasAnyPrefix(i.DownloadState, "failed", "error", "missing_files", "expired")
 }
 
 func hasAnyPrefix(s string, prefixes ...string) bool {

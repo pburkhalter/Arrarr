@@ -234,15 +234,33 @@ func (c *Client) auth(req *http.Request) {
 	req.Header.Set("Accept", "application/json")
 }
 
+// maxBodyBytes caps how much of a TorBox response we buffer. /usenet/mylist
+// grows with account history — every completed, expired and failed download
+// stays in the list with its full file array (~5 KB per entry) — so this has to
+// clear the whole history, not just the active downloads. It crossed the
+// previous 4 MiB cap in Aug 2026 at ~1000 entries, which silently truncated the
+// body mid-JSON and killed the poller for six days.
+const maxBodyBytes = 32 << 20
+
 func (c *Client) do(req *http.Request, out any) error {
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	// Read one byte past the cap so a body that fills it exactly is
+	// distinguishable from one that overflows it.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
 	if err != nil {
 		return err
+	}
+	// Fail loudly on truncation. Silently handing a clipped body to the JSON
+	// decoder yields "unexpected end of JSON input", which reads like a TorBox
+	// API fault rather than our own limit — exactly the misdirection that made
+	// the Aug 2026 poller outage take days to pin down.
+	if len(raw) > maxBodyBytes {
+		return fmt.Errorf("torbox: response body exceeds %d MiB limit (url=%s) — raise maxBodyBytes",
+			maxBodyBytes>>20, req.URL.Path)
 	}
 	if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 		return &APIError{
