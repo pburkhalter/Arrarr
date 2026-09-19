@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pburkhalter/arrarr/internal/downloader"
@@ -73,6 +74,19 @@ func (m *Manager) pullerLoop(ctx context.Context) {
 	}
 }
 
+// Tick pulls up to `limit` completed jobs concurrently.
+//
+// The concurrency is across jobs on purpose. Downloader.Concurrency only
+// parallelises the files *within* one job, and a typical episode release is a
+// single mkv — so that knob does nothing for a queue of episodes. Pulling one
+// release at a time meant every job also waited out all its predecessors:
+// measured over a 22-episode batch in Sep 2026, TorBox itself finished in a
+// median of 28s while COMPLETED_TORBOX → READY took a median of 60 minutes,
+// nearly all of it queueing.
+//
+// Callers must keep invoking Tick sequentially (pullerLoop does): a job stays
+// in COMPLETED_TORBOX for the whole pull, so an overlapping Tick would list it
+// again and download it twice.
 func (p *Puller) Tick(ctx context.Context, limit int) {
 	if limit <= 0 {
 		limit = 8
@@ -82,6 +96,8 @@ func (p *Puller) Tick(ctx context.Context, limit int) {
 		p.log.Error("puller: list failed", "err", err)
 		return
 	}
+
+	var wg sync.WaitGroup
 	for _, j := range jobs {
 		if j.LocalPath.Valid && j.LocalPath.String != "" {
 			// already pulled by an earlier tick that crashed before transition;
@@ -92,8 +108,13 @@ func (p *Puller) Tick(ctx context.Context, limit int) {
 			}
 			continue
 		}
-		p.pullOne(ctx, j)
+		wg.Add(1)
+		go func(j *job.Job) {
+			defer wg.Done()
+			p.pullOne(ctx, j)
+		}(j)
 	}
+	wg.Wait()
 }
 
 func (p *Puller) pullOne(ctx context.Context, j *job.Job) {
@@ -296,4 +317,3 @@ func sanitizeForFS(name string) string {
 	}
 	return name
 }
-
