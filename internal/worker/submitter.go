@@ -111,13 +111,13 @@ func (m *Manager) handleSubmitFailure(ctx context.Context, j *job.Job, err error
 	// 429 from TorBox is transient backpressure, not a job-specific failure.
 	// Don't count it against MaxSubmitAttempts and back off well past the
 	// 60/hour createusenetdownload limit so retries don't burn the budget.
-	if is429(err) {
+	if is429(err) || isActiveLimit(err) {
 		delay := 5*time.Minute + httpx.Backoff(1, time.Minute, 5*time.Minute)
 		if d := torboxRetryAfter(err); d > delay {
 			delay = d
 		}
 		next := time.Now().UTC().Add(delay)
-		m.log.Warn("submit rate-limited", "nzo_id", j.NzoID, "next_in", delay)
+		m.log.Warn("submit rate-limited", "nzo_id", j.NzoID, "next_in", delay, "err", describe(err))
 		if e := m.o.Store.Reschedule(ctx, j.NzoID, describe(err), next); e != nil {
 			m.log.Error("reschedule write", "nzo_id", j.NzoID, "err", e)
 		}
@@ -146,6 +146,26 @@ func (m *Manager) handleSubmitFailure(ctx context.Context, j *job.Job, err error
 	if e := m.o.Store.AttemptFailure(ctx, j.NzoID, describe(err), next); e != nil {
 		m.log.Error("attempt-failure write", "nzo_id", j.NzoID, "err", e)
 	}
+}
+
+// isActiveLimit reports whether TorBox refused the create because the account
+// already has its maximum number of concurrent downloads running.
+//
+// This is backpressure, not a problem with the release: the exact same NZB
+// succeeds once a slot frees up. Failing the job instead would report a Failed
+// grab to Sonarr/Radarr, which blocklists a perfectly good release and grabs a
+// replacement — which then also hits the limit. In Sep 2026 that loop produced
+// 326 failed grabs in 15 days while nothing could possibly succeed, because the
+// slots were held by abandoned downloads (see releaseTorboxSlot).
+//
+// TorBox reports it as HTTP 500 with an ordinary error envelope, so it arrives
+// as a retryable APIError; only the code distinguishes it from a real fault.
+func isActiveLimit(err error) bool {
+	var apiErr *torbox.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Code == "ACTIVE_LIMIT"
+	}
+	return false
 }
 
 func is429(err error) bool {

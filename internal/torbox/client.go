@@ -263,14 +263,17 @@ func (c *Client) do(req *http.Request, out any) error {
 			maxBodyBytes>>20, req.URL.Path)
 	}
 	if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+		code, detail := errEnvelope(raw)
 		return &APIError{
 			Status:     resp.StatusCode,
-			Detail:     truncate(string(raw), 200),
+			Code:       code,
+			Detail:     detail,
 			RetryAfter: httpx.RetryAfter(resp.Header.Get("Retry-After")),
 		}
 	}
 	if resp.StatusCode >= 400 {
-		return &APIError{Status: resp.StatusCode, Detail: truncate(string(raw), 200)}
+		code, detail := errEnvelope(raw)
+		return &APIError{Status: resp.StatusCode, Code: code, Detail: detail}
 	}
 	if out == nil {
 		return nil
@@ -289,6 +292,20 @@ func (c *Client) do(req *http.Request, out any) error {
 		return fmt.Errorf("decode data: %w", err)
 	}
 	return nil
+}
+
+// errEnvelope pulls the machine-readable code out of an error response. TorBox
+// answers quota problems with HTTP 500 and a normal envelope
+// ({"success":false,"error":"ACTIVE_LIMIT",…}), so without this the code is lost
+// and callers are left substring-matching the raw body to tell a hard failure
+// from backpressure. Falls back to the raw body for responses that carry no
+// envelope (gateway errors and the like).
+func errEnvelope(raw []byte) (code, detail string) {
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err == nil && !env.Success && env.Error != "" {
+		return env.Error, truncate(env.Detail, 200)
+	}
+	return "", truncate(string(raw), 200)
 }
 
 func IsRetryable(err error) bool {

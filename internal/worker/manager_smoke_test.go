@@ -372,8 +372,12 @@ func TestPollerStalledJobFails(t *testing.T) {
 		if err := st.Insert(context.Background(), j); err != nil {
 			t.Fatal(err)
 		}
+		// updated_at is aged along with created_at: "frozen" is measured as
+		// absence of progress, and updated_at is when progress last moved.
 		if _, err := st.DB().ExecContext(context.Background(),
-			`UPDATE jobs SET state='DOWNLOADING', created_at=datetime('now', ?) WHERE nzo_id=?`,
+			`UPDATE jobs SET state='DOWNLOADING', created_at=datetime('now', ?),
+			 updated_at=datetime('now', ?) WHERE nzo_id=?`,
+			"-"+strconv.Itoa(int(createdAgo.Seconds()))+" seconds",
 			"-"+strconv.Itoa(int(createdAgo.Seconds()))+" seconds", nzo); err != nil {
 			t.Fatal(err)
 		}

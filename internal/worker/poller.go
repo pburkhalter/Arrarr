@@ -146,11 +146,18 @@ func (m *Manager) applyMyListItem(ctx context.Context, j *job.Job, it *torbox.My
 			To:   job.StateDownloading,
 		})
 	}
+	// Record how far TorBox has got, writing only when the number actually
+	// moves. That turns UpdatedAt into "time of last observed progress", which
+	// is what tells a frozen download apart from a merely slow one.
+	m.recordRemoteProgress(ctx, j, it)
+
 	if strings.EqualFold(it.DownloadState, "downloading") &&
-		it.Progress == 0 && it.DownloadSpeed == 0 &&
-		time.Since(j.CreatedAt) > MaxStallDuration {
-		m.log.Warn("poll: torbox stalled at 0%",
-			"nzo_id", j.NzoID, "age", time.Since(j.CreatedAt))
+		time.Since(j.CreatedAt) > MaxStallDuration &&
+		time.Since(j.UpdatedAt) > MaxStallDuration {
+		m.log.Warn("poll: torbox frozen",
+			"nzo_id", j.NzoID, "progress", it.Progress,
+			"age", time.Since(j.CreatedAt), "idle", time.Since(j.UpdatedAt))
+		m.releaseTorboxSlot(ctx, j)
 		_ = m.o.Store.Transition(ctx, j.NzoID, store.Transition{
 			From:        j.State,
 			To:          job.StateFailed,
@@ -161,6 +168,7 @@ func (m *Manager) applyMyListItem(ctx context.Context, j *job.Job, it *torbox.My
 	}
 	if time.Since(j.CreatedAt) > MaxPollDuration {
 		m.log.Warn("poll: timeout reached", "nzo_id", j.NzoID, "age", time.Since(j.CreatedAt))
+		m.releaseTorboxSlot(ctx, j)
 		_ = m.o.Store.Transition(ctx, j.NzoID, store.Transition{
 			From:        j.State,
 			To:          job.StateFailed,
@@ -168,6 +176,62 @@ func (m *Manager) applyMyListItem(ctx context.Context, j *job.Job, it *torbox.My
 			CompletedAt: nowPtr(),
 		})
 	}
+}
+
+// recordRemoteProgress persists TorBox-side progress, but only on change, so
+// UpdatedAt marks the last time the download actually moved.
+func (m *Manager) recordRemoteProgress(ctx context.Context, j *job.Job, it *torbox.MyListItem) {
+	if it.Size <= 0 {
+		return
+	}
+	done := int64(it.Progress * float64(it.Size))
+	// Keyed on the downloaded amount alone: learning the total for a download
+	// still sitting at zero bytes is not movement, and counting it as such
+	// would hand every 0% job a fresh stall window on first sight.
+	if done == j.BytesDownloaded {
+		return
+	}
+	if err := m.o.Store.SetLocalProgress(ctx, j.NzoID, done, it.Size); err != nil {
+		m.log.Warn("poll: progress write failed", "nzo_id", j.NzoID, "err", err)
+		return
+	}
+	// Keep the in-memory copy in step; the checks below read it.
+	j.BytesDownloaded, j.BytesTotal, j.UpdatedAt = done, it.Size, time.Now().UTC()
+}
+
+// releaseTorboxSlot deletes the remote entry of a job we have given up on.
+//
+// TorBox caps concurrent downloads per account (10 usenet on this plan) and
+// keeps counting an entry against that cap until it is deleted — reaching a
+// terminal state on our side frees our queue, not the account's. Every
+// abandoned entry therefore costs a slot permanently, and once all ten are
+// gone every new submission is refused with ACTIVE_LIMIT.
+//
+// That is exactly what happened in Sep 2026: 16 downloads abandoned over two
+// months still sat in "downloading"/"processing", the account was full, and the
+// pipeline could not submit anything for 15 days. Both reaper comments in
+// manager.go already claimed failing a job "frees the slot" — nothing ever did.
+//
+// Best-effort: a failed delete is logged and the job still ends as failed. The
+// next pass will not retry it (the job is terminal by then), so this is the one
+// chance to clean up — which is why it runs before the state transition.
+func (m *Manager) releaseTorboxSlot(ctx context.Context, j *job.Job) {
+	id := j.EffectiveTorboxID()
+	if id == 0 {
+		return
+	}
+	var err error
+	if j.Source == "torrent" {
+		err = m.o.Torbox.ControlTorrent(ctx, id, "delete")
+	} else {
+		err = m.o.Torbox.ControlUsenet(ctx, id, "delete")
+	}
+	if err != nil {
+		m.log.Warn("poll: releasing torbox slot failed",
+			"nzo_id", j.NzoID, "torbox_id", id, "err", describe(err))
+		return
+	}
+	m.log.Info("poll: released torbox slot", "nzo_id", j.NzoID, "torbox_id", id)
 }
 
 func (m *Manager) handlePollMissing(ctx context.Context, j *job.Job) {
