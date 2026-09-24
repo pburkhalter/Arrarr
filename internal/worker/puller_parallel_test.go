@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -97,6 +98,7 @@ func TestPullerPullsJobsConcurrently(t *testing.T) {
 
 	start := time.Now()
 	p.Tick(ctx, jobs)
+	p.Wait()
 	elapsed := time.Since(start)
 
 	if got := maxInFlight.Load(); got < 2 {
@@ -117,4 +119,72 @@ func TestPullerPullsJobsConcurrently(t *testing.T) {
 	}
 	t.Logf("gleichzeitig=%d Dauer=%v (seriell waeren >=%v)", maxInFlight.Load(), elapsed,
 		time.Duration(jobs)*perFileDelay)
+}
+
+// A large release used to hold its whole batch: Tick waited for every job it
+// started, so the other slots idled until the slowest pull finished.
+func TestPullerRefillsSlotsWithoutWaitingForSlowPull(t *testing.T) {
+	const slow = 1500 * time.Millisecond
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/dl/100/") {
+			time.Sleep(slow)
+		} else {
+			time.Sleep(50 * time.Millisecond)
+		}
+		_, _ = io.WriteString(w, "payload")
+	}))
+	defer srv.Close()
+
+	st := newStore(t)
+	ctx := context.Background()
+	tb := &slowTorbox{base: srv.URL}
+	var nzos []string
+	for i := 0; i < 5; i++ { // job 0 is the big film, 1–4 are episodes
+		nzo := "arrarr_r" + strconv.Itoa(i)
+		folder := "Rel" + strconv.Itoa(i)
+		nzos = append(nzos, nzo)
+		tb.list = append(tb.list, torbox.MyListItem{
+			ID: int64(100 + i), Name: folder, DownloadState: "completed",
+			Files: []torbox.MyListFile{{ID: 1, Name: folder + "/file.mkv", ShortName: "file.mkv", Size: 7}},
+		})
+		j := &job.Job{NzoID: nzo, Category: "radarr", Filename: folder + ".nzb",
+			NzbSHA256: nzo, NzbBlob: []byte("nzb"), State: job.StateCompletedTorbox}
+		if err := st.Insert(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.DB().ExecContext(ctx,
+			`UPDATE jobs SET state='COMPLETED_TORBOX', torbox_active_id=? WHERE nzo_id=?`, 100+i, nzo); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond) // keep created_at order: the film is listed first
+	}
+	dl, err := downloader.New(downloader.Options{BaseDir: t.TempDir(), Concurrency: 1, Logger: noopLogger{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewPuller(PullerOptions{Store: st, Torbox: tb, Downloader: dl,
+		BaseDir: t.TempDir(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	defer p.Wait()
+
+	start := time.Now()
+	for time.Since(start) < 3*slow {
+		p.Tick(ctx, 2) // two slots: the film blocks one, episodes cycle through the other
+		allEpisodes := true
+		for _, nzo := range nzos[1:] {
+			if j, _ := st.Get(ctx, nzo); j.State != job.StateReady {
+				allEpisodes = false
+			}
+		}
+		if allEpisodes {
+			if el := time.Since(start); el >= slow {
+				t.Fatalf("episodes done after %s — they waited for the %s film", el, slow)
+			}
+			return
+		}
+		select {
+		case <-p.wake:
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	t.Fatal("episodes never finished")
 }

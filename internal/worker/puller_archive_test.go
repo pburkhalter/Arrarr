@@ -59,6 +59,7 @@ func TestPullerSkipsArchivesNextToVideo(t *testing.T) {
 	})
 	ctx := context.Background()
 	p.Tick(ctx, 1)
+	p.Wait()
 
 	j, err := p.store.Get(ctx, nzo)
 	if err != nil {
@@ -86,6 +87,7 @@ func TestPullerWaitsWhileOnlyArchivesListed(t *testing.T) {
 	ctx := context.Background()
 	for i := 0; i < 10; i++ { // more ticks than maxRetries
 		p.Tick(ctx, 1)
+		p.Wait()
 	}
 	j, _ := p.store.Get(ctx, nzo)
 	if j.State != job.StateCompletedTorbox {
@@ -100,6 +102,7 @@ func TestPullerWaitsWhileOnlyArchivesListed(t *testing.T) {
 	tb.list[0].Files = append(tb.list[0].Files, file(9, "se.s01e01.mkv"))
 	tb.mu.Unlock()
 	p.Tick(ctx, 1)
+	p.Wait()
 	if j, _ = p.store.Get(ctx, nzo); j.State != job.StateReady {
 		t.Fatalf("state = %s after extraction, want READY", j.State)
 	}
@@ -111,8 +114,10 @@ func TestPullerFailsWhenExtractionNeverHappens(t *testing.T) {
 	})
 	ctx := context.Background()
 	p.Tick(ctx, 1)
+	p.Wait()
 	time.Sleep(80 * time.Millisecond)
 	p.Tick(ctx, 1)
+	p.Wait()
 	j, _ := p.store.Get(ctx, nzo)
 	if j.State != job.StateFailed {
 		t.Fatalf("state = %s, want FAILED once the wait is over", j.State)

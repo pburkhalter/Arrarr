@@ -34,6 +34,14 @@ type Puller struct {
 	// archivesSince records when each job was first seen listing only
 	// archives. In memory on purpose: a restart merely restarts the wait.
 	archivesSince map[string]time.Time
+	// inflight holds the jobs currently being pulled. A job stays in
+	// COMPLETED_TORBOX for the whole pull, so this set is what keeps a later
+	// Tick from starting it a second time.
+	inflight map[string]bool
+	wg       sync.WaitGroup
+	// wake is signalled whenever a pull finishes, so its slot is refilled
+	// right away instead of on the next ticker beat.
+	wake chan struct{}
 }
 
 // errArchivesOnly means TorBox reports the release complete but lists only
@@ -82,6 +90,8 @@ func NewPuller(opts PullerOptions) *Puller {
 		maxRetries:    opts.MaxRetries,
 		archiveWait:   opts.ArchiveWait,
 		archivesSince: map[string]time.Time{},
+		inflight:      map[string]bool{},
+		wake:          make(chan struct{}, 1),
 	}
 }
 
@@ -89,16 +99,19 @@ func (m *Manager) pullerLoop(ctx context.Context) {
 	ticker := time.NewTicker(m.o.PullEvery)
 	defer ticker.Stop()
 	for {
+		m.o.Puller.Tick(ctx, m.o.WorkerPoolSize)
 		select {
 		case <-ctx.Done():
+			m.o.Puller.Wait()
 			return
 		case <-ticker.C:
-			m.o.Puller.Tick(ctx, m.o.WorkerPoolSize)
+		case <-m.o.Puller.wake:
 		}
 	}
 }
 
-// Tick pulls up to `limit` completed jobs concurrently.
+// Tick tops the pool up to `limit` concurrent pulls and returns without
+// waiting for them. Wait blocks until every started pull has finished.
 //
 // The concurrency is across jobs on purpose. Downloader.Concurrency only
 // parallelises the files *within* one job, and a typical episode release is a
@@ -108,20 +121,26 @@ func (m *Manager) pullerLoop(ctx context.Context) {
 // median of 28s while COMPLETED_TORBOX → READY took a median of 60 minutes,
 // nearly all of it queueing.
 //
-// Callers must keep invoking Tick sequentially (pullerLoop does): a job stays
-// in COMPLETED_TORBOX for the whole pull, so an overlapping Tick would list it
-// again and download it twice.
+// Slots are refilled as each pull finishes rather than per batch. Waiting for
+// a whole batch let one large release idle the other slots: in Sep 2026 a
+// 13 GB film held three slots empty while eleven jobs queued behind it.
 func (p *Puller) Tick(ctx context.Context, limit int) {
 	if limit <= 0 {
 		limit = 8
 	}
-	jobs, err := p.store.ListByStates(ctx, []job.State{job.StateCompletedTorbox}, limit)
+	p.mu.Lock()
+	busy := len(p.inflight)
+	p.mu.Unlock()
+	if busy >= limit {
+		return
+	}
+	// List past the in-flight jobs so there are enough idle ones to start.
+	jobs, err := p.store.ListByStates(ctx, []job.State{job.StateCompletedTorbox}, limit+busy)
 	if err != nil {
 		p.log.Error("puller: list failed", "err", err)
 		return
 	}
 
-	var wg sync.WaitGroup
 	for _, j := range jobs {
 		if j.LocalPath.Valid && j.LocalPath.String != "" {
 			// already pulled by an earlier tick that crashed before transition;
@@ -132,13 +151,34 @@ func (p *Puller) Tick(ctx context.Context, limit int) {
 			}
 			continue
 		}
-		wg.Add(1)
+		p.mu.Lock()
+		if p.inflight[j.NzoID] || len(p.inflight) >= limit {
+			p.mu.Unlock()
+			continue
+		}
+		p.inflight[j.NzoID] = true
+		p.mu.Unlock()
+
+		p.wg.Add(1)
 		go func(j *job.Job) {
-			defer wg.Done()
+			defer p.wg.Done()
+			defer p.finish(j.NzoID)
 			p.pullOne(ctx, j)
 		}(j)
 	}
-	wg.Wait()
+}
+
+// Wait blocks until every pull started by Tick has finished.
+func (p *Puller) Wait() { p.wg.Wait() }
+
+func (p *Puller) finish(nzoID string) {
+	p.mu.Lock()
+	delete(p.inflight, nzoID)
+	p.mu.Unlock()
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
 }
 
 func (p *Puller) pullOne(ctx context.Context, j *job.Job) {
