@@ -101,6 +101,32 @@ func (s *Store) ListByStates(ctx context.Context, states []job.State, limit int)
 	return scanJobs(rows)
 }
 
+// ListDueByStates is ListByStates restricted to jobs whose next_attempt_at
+// has elapsed, oldest first. The puller uses it so its retry backoff and the
+// wait for TorBox extraction are actually honoured.
+func (s *Store) ListDueByStates(ctx context.Context, states []job.State, limit int) ([]*job.Job, error) {
+	if len(states) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+	q := jobSelectCols + ` WHERE state IN (` + placeholders(len(states)) + `)
+	            AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
+	            ORDER BY created_at ASC LIMIT ?`
+	args := make([]any, 0, len(states)+1)
+	for _, st := range states {
+		args = append(args, string(st))
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanJobs(rows)
+}
+
 func (s *Store) ListReady(ctx context.Context, limit int) ([]*job.Job, error) {
 	if limit <= 0 {
 		limit = 1000
@@ -191,7 +217,7 @@ func (s *Store) Transition(ctx context.Context, nzoID string, t Transition) erro
 	}
 	if t.NextAttemptAt != nil {
 		sets = append(sets, "next_attempt_at = ?")
-		args = append(args, *t.NextAttemptAt)
+		args = append(args, t.NextAttemptAt.UTC())
 	} else {
 		sets = append(sets, "next_attempt_at = NULL")
 	}
@@ -220,6 +246,9 @@ func (s *Store) Transition(ctx context.Context, nzoID string, t Transition) erro
 	return nil
 }
 
+// next_attempt_at is compared as text against CURRENT_TIMESTAMP (UTC), so it
+// is always stored in UTC; a local time east of UTC would read as not due for
+// hours.
 func (s *Store) AttemptFailure(ctx context.Context, nzoID, errMsg string, nextAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET
 		attempts = attempts + 1,
@@ -227,7 +256,7 @@ func (s *Store) AttemptFailure(ctx context.Context, nzoID, errMsg string, nextAt
 		next_attempt_at = ?,
 		claimed_at = NULL,
 		updated_at = CURRENT_TIMESTAMP
-		WHERE nzo_id = ?`, errMsg, nextAt, nzoID)
+		WHERE nzo_id = ?`, errMsg, nextAt.UTC(), nzoID)
 	return err
 }
 
@@ -240,7 +269,7 @@ func (s *Store) Reschedule(ctx context.Context, nzoID, errMsg string, nextAt tim
 		next_attempt_at = ?,
 		claimed_at = NULL,
 		updated_at = CURRENT_TIMESTAMP
-		WHERE nzo_id = ?`, errMsg, nextAt, nzoID)
+		WHERE nzo_id = ?`, errMsg, nextAt.UTC(), nzoID)
 	return err
 }
 

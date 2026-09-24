@@ -22,12 +22,14 @@ import (
 // slowTorbox serves one single-file release per job — the shape of a normal
 // episode grab, where Downloader.Concurrency has nothing to parallelise.
 type slowTorbox struct {
-	base string
-	mu   sync.Mutex
-	list []torbox.MyListItem
+	base    string
+	mu      sync.Mutex
+	list    []torbox.MyListItem
+	myLists atomic.Int64
 }
 
 func (s *slowTorbox) MyList(context.Context, bool) ([]torbox.MyListItem, error) {
+	s.myLists.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.list, nil

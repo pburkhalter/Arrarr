@@ -135,7 +135,10 @@ func (p *Puller) Tick(ctx context.Context, limit int) {
 		return
 	}
 	// List past the in-flight jobs so there are enough idle ones to start.
-	jobs, err := p.store.ListByStates(ctx, []job.State{job.StateCompletedTorbox}, limit+busy)
+	// Only due jobs: a pull finishing wakes this loop at once, so a job in
+	// backoff (retry, or waiting for TorBox to extract) would otherwise be
+	// retried back to back and hold a slot polling TorBox.
+	jobs, err := p.store.ListDueByStates(ctx, []job.State{job.StateCompletedTorbox}, limit+busy)
 	if err != nil {
 		p.log.Error("puller: list failed", "err", err)
 		return

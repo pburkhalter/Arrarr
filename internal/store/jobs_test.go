@@ -184,3 +184,32 @@ func TestMarkLocalReadyAdvancesToReady(t *testing.T) {
 
 func strP(s string) *string         { return &s }
 func timeP(t time.Time) *time.Time  { return &t }
+
+// next_attempt_at is compared as text against CURRENT_TIMESTAMP (UTC). A time
+// stored with a zone east of UTC would sort after "now" for hours.
+func TestListDueByStatesWithLocalTimeZone(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	j := &job.Job{NzoID: "arrarr_tz", Category: "sonarr", Filename: "x.nzb",
+		NzbSHA256: "tz", NzbBlob: []byte("nzb"), State: job.StateNew}
+	if err := st.Insert(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	east := time.FixedZone("UTC+10", 10*3600)
+	if err := st.Reschedule(ctx, j.NzoID, "wait", time.Now().Add(-time.Minute).In(east)); err != nil {
+		t.Fatal(err)
+	}
+	due, err := st.ListDueByStates(ctx, []job.State{job.StateNew}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("job whose backoff elapsed a minute ago is not due (got %d jobs)", len(due))
+	}
+	if err := st.Reschedule(ctx, j.NzoID, "wait", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if due, _ = st.ListDueByStates(ctx, []job.State{job.StateNew}, 10); len(due) != 0 {
+		t.Fatal("job in backoff listed as due")
+	}
+}

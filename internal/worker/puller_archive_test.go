@@ -49,6 +49,14 @@ func newArchivePuller(t *testing.T, wait time.Duration, files []torbox.MyListFil
 	return p, tb, nzo, base
 }
 
+// elapseBackoff simulates the backoff running out.
+func elapseBackoff(t *testing.T, p *Puller, nzo string) {
+	t.Helper()
+	if _, err := p.store.DB().Exec(`UPDATE jobs SET next_attempt_at=NULL WHERE nzo_id=?`, nzo); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func file(id int64, name string) torbox.MyListFile {
 	return torbox.MyListFile{ID: id, Name: "Station.Eleven.S01E01/" + name, ShortName: name, Size: 7}
 }
@@ -88,6 +96,7 @@ func TestPullerWaitsWhileOnlyArchivesListed(t *testing.T) {
 	for i := 0; i < 10; i++ { // more ticks than maxRetries
 		p.Tick(ctx, 1)
 		p.Wait()
+		elapseBackoff(t, p, nzo)
 	}
 	j, _ := p.store.Get(ctx, nzo)
 	if j.State != job.StateCompletedTorbox {
@@ -116,6 +125,7 @@ func TestPullerFailsWhenExtractionNeverHappens(t *testing.T) {
 	p.Tick(ctx, 1)
 	p.Wait()
 	time.Sleep(80 * time.Millisecond)
+	elapseBackoff(t, p, nzo)
 	p.Tick(ctx, 1)
 	p.Wait()
 	j, _ := p.store.Get(ctx, nzo)
@@ -135,5 +145,25 @@ func TestArchiveAndVideoClassification(t *testing.T) {
 	}
 	if !isVideoFile("A.MKV") || isVideoFile("a.rar") {
 		t.Error("isVideoFile misclassifies")
+	}
+}
+
+// A finished pull wakes the loop at once. A job in backoff must not be picked
+// up again by that — it would poll TorBox back to back and hold a slot.
+func TestPullerHonoursBackoff(t *testing.T) {
+	p, tb, nzo, _ := newArchivePuller(t, time.Hour, []torbox.MyListFile{file(1, "se.s01e01.rar")})
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		p.Tick(ctx, 1)
+		p.Wait()
+	}
+	if got := tb.myLists.Load(); got != 1 {
+		t.Fatalf("TorBox polled %d times during backoff, want 1", got)
+	}
+	elapseBackoff(t, p, nzo)
+	p.Tick(ctx, 1)
+	p.Wait()
+	if got := tb.myLists.Load(); got != 2 {
+		t.Fatalf("TorBox polled %d times after backoff, want 2", got)
 	}
 }
