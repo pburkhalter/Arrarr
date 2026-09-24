@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -26,7 +27,23 @@ type Puller struct {
 	baseDir    string
 	log        *slog.Logger
 	maxRetries int
+
+	// archiveWait is how long a job may list only archives before it fails.
+	archiveWait time.Duration
+	mu          sync.Mutex
+	// archivesSince records when each job was first seen listing only
+	// archives. In memory on purpose: a restart merely restarts the wait.
+	archivesSince map[string]time.Time
 }
+
+// errArchivesOnly means TorBox reports the release complete but lists only
+// the packed RAR/ZIP parts, not the extracted video yet.
+var errArchivesOnly = errors.New("torbox lists only archives, extraction not finished")
+
+// DefaultArchiveWait bounds the wait for TorBox to extract a release.
+// Extraction normally finishes within minutes; past this the release is
+// treated as broken so the Arr blocklists it and searches another.
+const DefaultArchiveWait = 30 * time.Minute
 
 type torboxPullerClient interface {
 	MyList(ctx context.Context, bypassCache bool) ([]torbox.MyListItem, error)
@@ -42,6 +59,8 @@ type PullerOptions struct {
 	BaseDir    string
 	Logger     *slog.Logger
 	MaxRetries int
+	// ArchiveWait overrides DefaultArchiveWait (tests).
+	ArchiveWait time.Duration
 }
 
 func NewPuller(opts PullerOptions) *Puller {
@@ -51,13 +70,18 @@ func NewPuller(opts PullerOptions) *Puller {
 	if opts.MaxRetries < 1 {
 		opts.MaxRetries = 5
 	}
+	if opts.ArchiveWait <= 0 {
+		opts.ArchiveWait = DefaultArchiveWait
+	}
 	return &Puller{
-		store:      opts.Store,
-		tb:         opts.Torbox,
-		dl:         opts.Downloader,
-		baseDir:    strings.TrimRight(opts.BaseDir, "/"),
-		log:        opts.Logger,
-		maxRetries: opts.MaxRetries,
+		store:         opts.Store,
+		tb:            opts.Torbox,
+		dl:            opts.Downloader,
+		baseDir:       strings.TrimRight(opts.BaseDir, "/"),
+		log:           opts.Logger,
+		maxRetries:    opts.MaxRetries,
+		archiveWait:   opts.ArchiveWait,
+		archivesSince: map[string]time.Time{},
 	}
 }
 
@@ -134,6 +158,11 @@ func (p *Puller) pullOne(ctx context.Context, j *job.Job) {
 
 	subdir := p.subdir(j, item)
 	files, total, err := p.buildFileList(ctx, j, item)
+	if errors.Is(err, errArchivesOnly) {
+		p.awaitExtraction(ctx, j, logger)
+		return
+	}
+	p.clearArchiveWait(j.NzoID)
 	if err != nil {
 		logger.Warn("puller: build file list failed", "err", describe(err))
 		p.scheduleRetry(ctx, j, "build file list: "+err.Error())
@@ -194,8 +223,48 @@ func (p *Puller) findItem(ctx context.Context, j *job.Job) (*torbox.MyListItem, 
 	return nil, fmt.Errorf("torbox item not found (id=%d folder=%q)", wantID, j.TorboxFolderName.String)
 }
 
+// awaitExtraction leaves a job whose release is still packed in
+// COMPLETED_TORBOX so the next tick polls TorBox again, without spending an
+// attempt. Pulling the archives instead would hand the Arr RAR parts it
+// cannot import (Station Eleven, Sep 2026). Past archiveWait the job fails.
+func (p *Puller) awaitExtraction(ctx context.Context, j *job.Job, logger *slog.Logger) {
+	p.mu.Lock()
+	since, seen := p.archivesSince[j.NzoID]
+	if !seen {
+		since = time.Now()
+		p.archivesSince[j.NzoID] = since
+	}
+	p.mu.Unlock()
+
+	waited := time.Since(since)
+	if waited < p.archiveWait {
+		logger.Info("puller: only archives listed, waiting for torbox extraction",
+			"waited", waited.Round(time.Second))
+		if err := p.store.Reschedule(ctx, j.NzoID, errArchivesOnly.Error(), time.Now().Add(time.Minute)); err != nil {
+			logger.Warn("puller: reschedule failed", "err", err)
+		}
+		return
+	}
+	p.clearArchiveWait(j.NzoID)
+	logger.Warn("puller: torbox never extracted the release, failing job", "waited", waited.Round(time.Second))
+	_ = p.store.Transition(ctx, j.NzoID, store.Transition{
+		From:        j.State,
+		To:          job.StateFailed,
+		LastError:   strPtr(fmt.Sprintf("%s after %s", errArchivesOnly, waited.Round(time.Minute))),
+		CompletedAt: nowPtr(),
+	})
+}
+
+func (p *Puller) clearArchiveWait(nzoID string) {
+	p.mu.Lock()
+	delete(p.archivesSince, nzoID)
+	p.mu.Unlock()
+}
+
 // buildFileList resolves a presigned CDN URL for every video-ish file in the
-// item, skipping noise (NFOs, samples, txt). Returns the FileDownload list and
+// item, skipping noise (NFOs, samples, txt). Archives are skipped whenever a
+// video is present — they are the leftovers of an extraction. With archives
+// but no video it returns errArchivesOnly. Returns the FileDownload list and
 // the aggregate byte total for progress reporting.
 func (p *Puller) buildFileList(ctx context.Context, j *job.Job, item *torbox.MyListItem) ([]downloader.FileDownload, int64, error) {
 	src := jobSource(j)
@@ -203,10 +272,21 @@ func (p *Puller) buildFileList(ctx context.Context, j *job.Job, item *torbox.MyL
 	if tbid == 0 {
 		tbid = item.QueueID
 	}
+	var hasVideo, hasArchive bool
+	for _, f := range item.Files {
+		if isNoiseFile(f.Name) {
+			continue
+		}
+		hasVideo = hasVideo || isVideoFile(f.Name)
+		hasArchive = hasArchive || isArchiveFile(f.Name)
+	}
+	if hasArchive && !hasVideo {
+		return nil, 0, errArchivesOnly
+	}
 	out := make([]downloader.FileDownload, 0, len(item.Files))
 	var total int64
 	for _, f := range item.Files {
-		if isNoiseFile(f.Name) {
+		if isNoiseFile(f.Name) || isArchiveFile(f.Name) {
 			continue
 		}
 		var url string
@@ -284,6 +364,26 @@ func isNoiseFile(name string) bool {
 		}
 	}
 	return strings.Contains(lower, "/sample/") || strings.Contains(lower, "sample.")
+}
+
+var (
+	videoExts = []string{".mkv", ".mp4", ".m4v", ".avi", ".ts", ".m2ts", ".mov", ".wmv", ".mpg", ".mpeg", ".webm"}
+	// .rar, .r00–.r999, .zip, .7z and split parts like .001.
+	archiveRE = regexp.MustCompile(`\.(rar|r\d{2,3}|zip|7z|\d{3})$`)
+)
+
+func isVideoFile(name string) bool {
+	lower := strings.ToLower(name)
+	for _, ext := range videoExts {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func isArchiveFile(name string) bool {
+	return archiveRE.MatchString(strings.ToLower(name))
 }
 
 // relativeFileName strips the release-folder prefix from MyListFile.Name so
