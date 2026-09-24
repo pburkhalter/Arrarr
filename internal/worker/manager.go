@@ -133,11 +133,7 @@ func New(o Options) *Manager {
 	if o.PullEvery == 0 {
 		o.PullEvery = 15 * time.Second
 	}
-	m := &Manager{o: o, log: o.Logger}
-	if o.Store != nil {
-		o.Store.AddTransitionHook(m.onTransition)
-	}
-	return m
+	return &Manager{o: o, log: o.Logger}
 }
 
 func (m *Manager) Run(ctx context.Context) error {

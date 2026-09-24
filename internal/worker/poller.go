@@ -151,8 +151,7 @@ func (m *Manager) applyMyListItem(ctx context.Context, j *job.Job, it *torbox.My
 	// is what tells a frozen download apart from a merely slow one.
 	m.recordRemoteProgress(ctx, j, it)
 
-	// Both ceilings measure from when TorBox got the job; the janitor hook
-	// releases the remote entry as part of the FAILED transition.
+	// Both ceilings measure from when TorBox got the job.
 	since := j.InFlightSince()
 	if strings.EqualFold(it.DownloadState, "downloading") &&
 		time.Since(since) > MaxStallDuration &&
@@ -160,6 +159,7 @@ func (m *Manager) applyMyListItem(ctx context.Context, j *job.Job, it *torbox.My
 		m.log.Warn("poll: torbox frozen",
 			"nzo_id", j.NzoID, "progress", it.Progress,
 			"age", time.Since(since), "idle", time.Since(j.UpdatedAt))
+		m.releaseTorboxSlot(ctx, j)
 		_ = m.o.Store.Transition(ctx, j.NzoID, store.Transition{
 			From:        j.State,
 			To:          job.StateFailed,
@@ -170,6 +170,7 @@ func (m *Manager) applyMyListItem(ctx context.Context, j *job.Job, it *torbox.My
 	}
 	if time.Since(since) > MaxPollDuration {
 		m.log.Warn("poll: timeout reached", "nzo_id", j.NzoID, "age", time.Since(since))
+		m.releaseTorboxSlot(ctx, j)
 		_ = m.o.Store.Transition(ctx, j.NzoID, store.Transition{
 			From:        j.State,
 			To:          job.StateFailed,
