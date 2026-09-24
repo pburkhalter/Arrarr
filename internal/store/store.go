@@ -12,20 +12,21 @@ import (
 
 type Store struct {
 	db *sql.DB
-	// onTransition, if set, is called after every successful state change
-	// (via Transition or MarkLocalReady). It must be non-blocking — the
-	// events emitter enqueues and returns. Never affects the state machine.
-	onTransition func(nzoID, from, to string)
+	// onTransition hooks run after every successful state change (via
+	// Transition or MarkLocalReady), in registration order: the outbound
+	// events emitter and the TorBox janitor. They never affect the state
+	// machine; a hook that does I/O must bound it itself.
+	onTransition []func(nzoID, from, to string)
 }
 
-// SetTransitionHook installs the outbound-events callback (optional).
-func (s *Store) SetTransitionHook(fn func(nzoID, from, to string)) {
-	s.onTransition = fn
+// AddTransitionHook registers a callback for successful state changes.
+func (s *Store) AddTransitionHook(fn func(nzoID, from, to string)) {
+	s.onTransition = append(s.onTransition, fn)
 }
 
 func (s *Store) fireTransition(nzoID, from, to string) {
-	if s.onTransition != nil {
-		s.onTransition(nzoID, from, to)
+	for _, fn := range s.onTransition {
+		fn(nzoID, from, to)
 	}
 }
 

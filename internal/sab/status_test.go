@@ -92,6 +92,7 @@ func TestStatusPageRenders(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("X-Api-Key", "k") // the page lists job paths and errors — key required
 	srv.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())

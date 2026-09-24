@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"regexp"
 	"sync"
 	"time"
 
@@ -132,7 +133,11 @@ func New(o Options) *Manager {
 	if o.PullEvery == 0 {
 		o.PullEvery = 15 * time.Second
 	}
-	return &Manager{o: o, log: o.Logger}
+	m := &Manager{o: o, log: o.Logger}
+	if o.Store != nil {
+		o.Store.AddTransitionHook(m.onTransition)
+	}
+	return m
 }
 
 func (m *Manager) Run(ctx context.Context) error {
@@ -155,14 +160,22 @@ func (m *Manager) Run(ctx context.Context) error {
 	return nil
 }
 
+// describe renders an error for logs and last_error, with credentials
+// masked: a transport failure quotes the whole request URL, and TorBox's
+// requestdl carries the api key as a query parameter.
 func describe(err error) string {
 	if err == nil {
 		return ""
 	}
 	var apiErr *torbox.APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.Error()
+		return redact(apiErr.Error())
 	}
-	return err.Error()
+	return redact(err.Error())
 }
+
+// secretParam matches query parameters that carry credentials.
+var secretParam = regexp.MustCompile(`(?i)(token|api[_-]?key|apikey|password)=[^&\s"']+`)
+
+func redact(s string) string { return secretParam.ReplaceAllString(s, "$1=***") }
 

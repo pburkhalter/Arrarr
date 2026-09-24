@@ -37,6 +37,9 @@ type Job struct {
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 	CompletedAt      sql.NullTime
+	// SubmittedAt is when the job reached SUBMITTED (TorBox has it). NULL on
+	// rows from before the column existed.
+	SubmittedAt sql.NullTime
 
 	// Source distinguishes which TorBox API the submitter calls
 	// (CreateUsenetDownload vs CreateTorrentFromFile/Magnet) and which mylist
@@ -59,6 +62,17 @@ type Job struct {
 	// pull rather than just TorBox's cloud download.
 	BytesDownloaded int64
 	BytesTotal      int64
+}
+
+// InFlightSince is when TorBox got the job: the SUBMITTED stamp, or the row's
+// creation for rows that predate it. The poll ceilings measure from here, not
+// from created_at — a job can queue in NEW for hours behind TorBox's active
+// limit before it is ever submitted, and used to lose that time from its 24h.
+func (j *Job) InFlightSince() time.Time {
+	if j.SubmittedAt.Valid {
+		return j.SubmittedAt.Time
+	}
+	return j.CreatedAt
 }
 
 func (j *Job) EffectiveTorboxID() int64 {

@@ -108,7 +108,11 @@ func run() error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
-	tb := torbox.NewClient(cfg.TorboxBaseURL, cfg.TorboxAPIKey, cfg.TorboxRateLimitPerMin, cfg.TorboxCreatePerHour, 30*time.Second)
+	// Timeout 0 = the client's 90s default. createusenetdownload regularly
+	// takes 20-60s under load; the 30s once passed here made those creates
+	// time out client-side, count as failed attempts and eventually fail the
+	// job while TorBox had accepted the NZB.
+	tb := torbox.NewClient(cfg.TorboxBaseURL, cfg.TorboxAPIKey, cfg.TorboxRateLimitPerMin, cfg.TorboxCreatePerHour, 0)
 
 	var pushoverClient *pushover.Client
 	if cfg.PushoverEnabled() {
@@ -120,7 +124,7 @@ func run() error {
 	// store so every Transition/MarkLocalReady success emits.
 	if cfg.EventsEnabled() {
 		emitter := events.New(cfg.EventsURL, cfg.EventsToken, cfg.EventsTimeout, st.Get, log.With("component", "events"))
-		st.SetTransitionHook(emitter.Enqueue)
+		st.AddTransitionHook(emitter.Enqueue)
 		go emitter.Run(rootCtx)
 		log.Info("outbound events enabled", "url", cfg.EventsURL)
 	}

@@ -193,6 +193,9 @@ func (s *Store) Transition(ctx context.Context, nzoID string, t Transition) erro
 	}
 	sets := []string{"state = ?", "updated_at = CURRENT_TIMESTAMP"}
 	args := []any{string(t.To)}
+	if t.To == job.StateSubmitted {
+		sets = append(sets, "submitted_at = CURRENT_TIMESTAMP")
+	}
 
 	if t.TorboxQueueID != nil {
 		sets = append(sets, "torbox_queue_id = ?")
@@ -444,7 +447,7 @@ func (s *Store) Reap(ctx context.Context, before time.Time) (int64, error) {
 const jobColsList = `nzo_id, category, filename, nzb_sha256, nzb_blob, size_bytes, priority,
 	torbox_queue_id, torbox_active_id, torbox_folder_name, state, attempts, last_error,
 	claimed_at, next_attempt_at, created_at, updated_at, completed_at,
-	source, magnet, local_path, bytes_downloaded, bytes_total`
+	source, magnet, local_path, bytes_downloaded, bytes_total, submitted_at`
 
 const jobSelectCols = `SELECT ` + jobColsList + ` FROM jobs`
 
@@ -459,7 +462,7 @@ func scanJob(r rowScanner) (*job.Job, error) {
 		&j.NzoID, &j.Category, &j.Filename, &j.NzbSHA256, &j.NzbBlob, &j.SizeBytes, &j.Priority,
 		&j.TorboxQueueID, &j.TorboxActiveID, &j.TorboxFolderName, &state, &j.Attempts, &j.LastError,
 		&j.ClaimedAt, &j.NextAttemptAt, &j.CreatedAt, &j.UpdatedAt, &j.CompletedAt,
-		&j.Source, &j.Magnet, &j.LocalPath, &j.BytesDownloaded, &j.BytesTotal,
+		&j.Source, &j.Magnet, &j.LocalPath, &j.BytesDownloaded, &j.BytesTotal, &j.SubmittedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

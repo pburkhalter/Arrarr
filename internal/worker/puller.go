@@ -53,6 +53,13 @@ var errArchivesOnly = errors.New("torbox lists only archives, extraction not fin
 // treated as broken so the Arr blocklists it and searches another.
 const DefaultArchiveWait = 30 * time.Minute
 
+// itemByIDClient is the optional single-entry lookup (the real client has it;
+// test fakes may not).
+type itemByIDClient interface {
+	MyListByID(ctx context.Context, id int64, bypassCache bool) (*torbox.MyListItem, error)
+	MyListTorrentByID(ctx context.Context, id int64, bypassCache bool) (*torbox.MyListItem, error)
+}
+
 type torboxPullerClient interface {
 	MyList(ctx context.Context, bypassCache bool) ([]torbox.MyListItem, error)
 	MyListTorrents(ctx context.Context, bypassCache bool) ([]torbox.MyListItem, error)
@@ -190,7 +197,7 @@ func (p *Puller) pullOne(ctx context.Context, j *job.Job) {
 	item, err := p.findItem(ctx, j)
 	if err != nil {
 		logger.Warn("puller: lookup failed", "err", describe(err))
-		p.scheduleRetry(ctx, j, "lookup: "+err.Error())
+		p.scheduleRetry(ctx, j, "lookup: "+describe(err))
 		return
 	}
 	if len(item.Files) == 0 {
@@ -208,7 +215,7 @@ func (p *Puller) pullOne(ctx context.Context, j *job.Job) {
 	p.clearArchiveWait(j.NzoID)
 	if err != nil {
 		logger.Warn("puller: build file list failed", "err", describe(err))
-		p.scheduleRetry(ctx, j, "build file list: "+err.Error())
+		p.scheduleRetry(ctx, j, "build file list: "+describe(err))
 		return
 	}
 
@@ -222,8 +229,8 @@ func (p *Puller) pullOne(ctx context.Context, j *job.Job) {
 
 	abs, err := p.dl.Run(ctx, dlJob)
 	if err != nil {
-		logger.Error("puller: download failed", "err", err.Error())
-		p.scheduleRetry(ctx, j, "download: "+err.Error())
+		logger.Error("puller: download failed", "err", describe(err))
+		p.scheduleRetry(ctx, j, "download: "+describe(err))
 		return
 	}
 
@@ -238,6 +245,26 @@ func (p *Puller) pullOne(ctx context.Context, j *job.Job) {
 // list (usenet or torrent). Matches by TorBox id first, falls back to folder
 // name (TorBox swaps queue_id for id mid-flight).
 func (p *Puller) findItem(ctx context.Context, j *job.Job) (*torbox.MyListItem, error) {
+	wantID := j.EffectiveTorboxID()
+	// Fast path: one entry by id. The full list carries the account's whole
+	// history (~5 KB per entry, 1 000+ entries) and was fetched once per job.
+	if wantID != 0 {
+		if c, ok := p.tb.(itemByIDClient); ok {
+			var it *torbox.MyListItem
+			var err error
+			if jobSource(j) == "torrent" {
+				it, err = c.MyListTorrentByID(ctx, wantID, true)
+			} else {
+				it, err = c.MyListByID(ctx, wantID, true)
+			}
+			if err == nil && it != nil && (it.ID == wantID || it.QueueID == wantID) {
+				return it, nil
+			}
+			if err != nil {
+				p.log.Debug("puller: by-id lookup failed, falling back to the list", "nzo_id", j.NzoID, "err", describe(err))
+			}
+		}
+	}
 	var items []torbox.MyListItem
 	var err error
 	switch jobSource(j) {
@@ -249,7 +276,6 @@ func (p *Puller) findItem(ctx context.Context, j *job.Job) (*torbox.MyListItem, 
 	if err != nil {
 		return nil, err
 	}
-	wantID := j.EffectiveTorboxID()
 	for i := range items {
 		it := &items[i]
 		if wantID != 0 && (it.ID == wantID || it.QueueID == wantID) {

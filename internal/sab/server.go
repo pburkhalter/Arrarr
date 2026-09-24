@@ -2,6 +2,7 @@ package sab
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -94,7 +95,9 @@ func (s *Server) Handler() http.Handler {
 	api.Get("/healthz", s.handleHealthz)
 	api.Post("/webhook", s.handleTorBoxWebhook)
 	api.Get("/status.json", s.handleStatusJSON)
-	api.Get("/", s.handleStatus)
+	// The HTML page lists job paths, nzo ids and error texts — key required.
+	// /status.json stays open: aggregates only, and the NAS healthcheck reads it.
+	api.Get("/", s.requireKey(s.handleStatus))
 
 	if s.urlBase == "" {
 		r.Mount("/", api)
@@ -127,13 +130,25 @@ func (s *Server) authenticate(r *http.Request, mode string) bool {
 	if s.apiKey == "" {
 		return true
 	}
-	if r.URL.Query().Get("apikey") == s.apiKey {
+	key := []byte(s.apiKey)
+	if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("apikey")), key) == 1 {
 		return true
 	}
-	if r.Header.Get("X-Api-Key") == s.apiKey {
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Api-Key")), key) == 1 {
 		return true
 	}
 	return false
+}
+
+// requireKey gates a plain GET (no SAB mode) behind the api key.
+func (s *Server) requireKey(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.authenticate(r, "") {
+			http.Error(w, "API Key Incorrect", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
 }
 
 func (s *Server) writeError(w http.ResponseWriter, status int, msg string) {

@@ -542,4 +542,3 @@ type noopLogger struct{}
 func (noopLogger) Info(string, ...any)  {}
 func (noopLogger) Warn(string, ...any)  {}
 func (noopLogger) Error(string, ...any) {}
-

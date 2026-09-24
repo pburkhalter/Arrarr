@@ -143,7 +143,9 @@ NEW → SUBMITTED → DOWNLOADING → COMPLETED_TORBOX → READY
 - `/sabnzbd/api` — SABnzbd-compatible (`mode=addfile`, `queue`, `history`, etc.)
 - `/api/v2/*` — qBittorrent v2 (when credentials configured)
 - `/webhook` — TorBox webhook receiver (when secret configured)
-- `/healthz` — liveness probe
+- `/healthz` — liveness probe (open)
+- `/status.json` — aggregate state counts, TorBox create headroom, poller liveness (open; consumed by Journarr and the NAS healthcheck)
+- `/` — HTML status page with recent jobs; requires the API key (`X-Api-Key` header or `?apikey=`)
 - `/` — status dashboard
 
 ## CLI

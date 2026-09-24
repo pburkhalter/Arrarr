@@ -1,6 +1,7 @@
 package torbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/pburkhalter/arrarr/internal/httpx"
+	"strconv"
 )
 
 type Client struct {
@@ -138,6 +140,52 @@ func (c *Client) MyList(ctx context.Context, bypassCache bool) ([]MyListItem, er
 		return nil, err
 	}
 	return out, nil
+}
+
+// MyListByID fetches one usenet entry. TorBox answers a single object when
+// id is given, so this stays cheap however long the account's history grows.
+// Returns (nil, nil) when TorBox has no such entry.
+func (c *Client) MyListByID(ctx context.Context, id int64, bypassCache bool) (*MyListItem, error) {
+	return c.mylistByID(ctx, "/usenet/mylist", id, bypassCache)
+}
+
+func (c *Client) mylistByID(ctx context.Context, path string, id int64, bypassCache bool) (*MyListItem, error) {
+	q := url.Values{}
+	q.Set("id", strconv.FormatInt(id, 10))
+	if bypassCache {
+		q.Set("bypass_cache", "true")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path+"?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	c.auth(req)
+	var raw json.RawMessage
+	if err := c.do(req, &raw); err != nil {
+		return nil, err
+	}
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	// Tolerate either shape: an object for a single id, or the list form.
+	if raw[0] == '[' {
+		var items []MyListItem
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return nil, fmt.Errorf("decode mylist: %w", err)
+		}
+		for i := range items {
+			if items[i].ID == id || items[i].QueueID == id {
+				return &items[i], nil
+			}
+		}
+		return nil, nil
+	}
+	var it MyListItem
+	if err := json.Unmarshal(raw, &it); err != nil {
+		return nil, fmt.Errorf("decode mylist entry: %w", err)
+	}
+	return &it, nil
 }
 
 // EditUsenetParams is the request body for EditUsenet. Pointer + omitempty so

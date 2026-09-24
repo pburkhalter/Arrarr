@@ -94,6 +94,11 @@ func (c *Client) MyListTorrents(ctx context.Context, bypassCache bool) ([]MyList
 	return out, nil
 }
 
+// MyListTorrentByID fetches one torrent entry; see MyListByID.
+func (c *Client) MyListTorrentByID(ctx context.Context, id int64, bypassCache bool) (*MyListItem, error) {
+	return c.mylistByID(ctx, "/torrents/mylist", id, bypassCache)
+}
+
 // RequestTorrentDL fetches a presigned CDN URL for a single file.
 // fileID=0 + zipLink=true returns a zip of all files.
 func (c *Client) RequestTorrentDL(ctx context.Context, torrentID, fileID int64, zipLink bool) (string, error) {

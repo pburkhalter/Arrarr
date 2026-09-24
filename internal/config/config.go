@@ -88,6 +88,14 @@ func Load() (*Config, error) {
 	}
 	c.DownloadDir = strings.TrimRight(c.DownloadDir, "/")
 
+	// `required` only checks that the variable exists; an empty value passed
+	// and disabled SAB authentication entirely.
+	if strings.TrimSpace(c.APIKey) == "" {
+		return nil, fmt.Errorf("ARRARR_API_KEY must not be empty")
+	}
+	if strings.TrimSpace(c.TorboxAPIKey) == "" {
+		return nil, fmt.Errorf("TORBOX_API_KEY must not be empty")
+	}
 	if c.WorkerPoolSize < 1 {
 		return nil, fmt.Errorf("WORKER_POOL_SIZE must be >= 1")
 	}

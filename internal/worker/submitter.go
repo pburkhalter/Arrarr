@@ -176,13 +176,13 @@ func is429(err error) bool {
 	return false
 }
 
+// torboxRetryAfter reads the Retry-After TorBox sent with a 429. It looked for
+// a RetryAfter method before, but APIError carries a field — so the header was
+// parsed and then never used.
 func torboxRetryAfter(err error) time.Duration {
-	if err == nil {
-		return 0
-	}
-	type retryAfterer interface{ RetryAfter() time.Duration }
-	if ra, ok := err.(retryAfterer); ok { //nolint:errorlint
-		return ra.RetryAfter()
+	var apiErr *torbox.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.RetryAfter
 	}
 	return 0
 }

@@ -148,6 +148,13 @@ func (s *Server) handleHistoryAction(w http.ResponseWriter, r *http.Request, act
 		s.writeError(w, http.StatusBadRequest, "missing value=<nzo_id>")
 		return
 	}
+	// A history delete on a job that is still in flight is a cancel: run the
+	// CANCELED transition first so the janitor releases the TorBox entry,
+	// then drop the row.
+	if err := s.cancel(r.Context(), value); err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if err := s.store.Delete(r.Context(), value); err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
