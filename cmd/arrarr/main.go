@@ -195,7 +195,7 @@ func run() error {
 	// Multiplex sab + qbit on one listener. sab.Handler() routes /sabnzbd/*
 	// plus /webhook + /healthz at root; qbit.Handler() routes /api/v2/*.
 	sabHandler := srv.Handler()
-	var root http.Handler = sabHandler
+	root := sabHandler
 	if cfg.QbitEnabled() {
 		qbitSrv := qbit.NewServer(qbit.Options{
 			Username:        cfg.QbitUsername,
