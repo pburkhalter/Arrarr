@@ -10,6 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/pburkhalter/arrarr/internal/job"
 )
 
 type Store interface {
@@ -40,6 +42,10 @@ type Server struct {
 	// pollHealth reports the worker poller's last successful pass and last
 	// error, for /status.json. nil → omitted from the payload.
 	pollHealth func() (lastOK time.Time, lastErr string)
+
+	// discard deletes a job's data on a delete with del_files=1. nil → the
+	// delete only drops the job, as before.
+	discard func(ctx context.Context, j *job.Job)
 }
 
 type Options struct {
@@ -65,6 +71,10 @@ type Options struct {
 	// PollHealth, when set, exposes poller liveness on /status.json. Wire it to
 	// (*worker.Manager).PollHealth.
 	PollHealth func() (lastOK time.Time, lastErr string)
+	// Discard, when set, runs after a queue/history delete with del_files=1
+	// with the job as it was before the delete. Wire it to
+	// (*worker.Manager).Discard.
+	Discard func(ctx context.Context, j *job.Job)
 }
 
 func NewServer(o Options) *Server {
@@ -83,6 +93,7 @@ func NewServer(o Options) *Server {
 		torboxQuota: o.TorboxQuota,
 		pollHealth:  o.PollHealth,
 		version:     o.Version,
+		discard:     o.Discard,
 	}
 }
 

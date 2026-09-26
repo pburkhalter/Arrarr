@@ -14,7 +14,7 @@ import (
 func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if name := q.Get("name"); name != "" {
-		s.handleQueueAction(w, r, name, q.Get("value"))
+		s.handleQueueAction(w, r, name, q.Get("value"), q.Get("del_files") == "1")
 		return
 	}
 	limit := parseLimit(q.Get("limit"), 100, 1000)
@@ -76,7 +76,7 @@ func queueSlotFromJob(idx int, j *job.Job) QueueSlot {
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if name := q.Get("name"); name != "" {
-		s.handleHistoryAction(w, r, name, q.Get("value"))
+		s.handleHistoryAction(w, r, name, q.Get("value"), q.Get("del_files") == "1")
 		return
 	}
 	limit := parseLimit(q.Get("limit"), 200, 1000)
@@ -123,7 +123,11 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) handleQueueAction(w http.ResponseWriter, r *http.Request, action, value string) {
+// With del_files=1 (SABnzbd's "delete the data too") the job's local files
+// and, while TorBox is still downloading it, its own TorBox entry go too —
+// see worker.Manager.Discard. Sonarr/Radarr send it when a download is
+// removed with its data, e.g. by Journarr's "remove everywhere".
+func (s *Server) handleQueueAction(w http.ResponseWriter, r *http.Request, action, value string, delFiles bool) {
 	if action != "delete" {
 		s.writeError(w, http.StatusBadRequest, "unsupported queue action: "+action)
 		return
@@ -132,14 +136,16 @@ func (s *Server) handleQueueAction(w http.ResponseWriter, r *http.Request, actio
 		s.writeError(w, http.StatusBadRequest, "missing value=<nzo_id>")
 		return
 	}
-	if err := s.cancel(r.Context(), value); err != nil {
+	j, err := s.cancel(r.Context(), value)
+	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.discardIf(r.Context(), j, delFiles)
 	writeJSON(w, http.StatusOK, SimpleStatus{Status: true})
 }
 
-func (s *Server) handleHistoryAction(w http.ResponseWriter, r *http.Request, action, value string) {
+func (s *Server) handleHistoryAction(w http.ResponseWriter, r *http.Request, action, value string, delFiles bool) {
 	if action != "delete" {
 		s.writeError(w, http.StatusBadRequest, "unsupported history action: "+action)
 		return
@@ -149,12 +155,14 @@ func (s *Server) handleHistoryAction(w http.ResponseWriter, r *http.Request, act
 		return
 	}
 	// A history delete on a job that is still in flight is a cancel: run the
-	// CANCELED transition first so the janitor releases the TorBox entry,
-	// then drop the row.
-	if err := s.cancel(r.Context(), value); err != nil {
+	// CANCELED transition first so the workers stop touching it, then drop
+	// the row.
+	j, err := s.cancel(r.Context(), value)
+	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.discardIf(r.Context(), j, delFiles)
 	if err := s.store.Delete(r.Context(), value); err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -162,16 +170,18 @@ func (s *Server) handleHistoryAction(w http.ResponseWriter, r *http.Request, act
 	writeJSON(w, http.StatusOK, SimpleStatus{Status: true})
 }
 
-func (s *Server) cancel(ctx context.Context, nzoID string) error {
+// cancel ends nzoID: an active job becomes CANCELED, a finished one is
+// dropped. It returns the job as it was before (nil when unknown).
+func (s *Server) cancel(ctx context.Context, nzoID string) (*job.Job, error) {
 	j, err := s.store.Get(ctx, nzoID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 	if j.State.Terminal() {
-		return s.store.Delete(ctx, nzoID)
+		return j, s.store.Delete(ctx, nzoID)
 	}
 	if err := s.store.Transition(ctx, nzoID, store.Transition{
 		From:        j.State,
@@ -179,8 +189,15 @@ func (s *Server) cancel(ctx context.Context, nzoID string) error {
 		LastError:   strPtr("canceled by client"),
 		CompletedAt: timePtrNow(),
 	}); err != nil {
-		return fmt.Errorf("cancel: %w", err)
+		return nil, fmt.Errorf("cancel: %w", err)
 	}
 	s.signalWake()
-	return nil
+	return j, nil
+}
+
+func (s *Server) discardIf(ctx context.Context, j *job.Job, delFiles bool) {
+	if !delFiles || j == nil || s.discard == nil {
+		return
+	}
+	s.discard(ctx, j)
 }

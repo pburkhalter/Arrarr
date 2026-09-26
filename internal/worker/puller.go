@@ -36,8 +36,8 @@ type Puller struct {
 	archivesSince map[string]time.Time
 	// inflight holds the jobs currently being pulled. A job stays in
 	// COMPLETED_TORBOX for the whole pull, so this set is what keeps a later
-	// Tick from starting it a second time.
-	inflight map[string]bool
+	// Tick from starting it a second time. It also lets Abort stop a pull.
+	inflight map[string]*pull
 	wg       sync.WaitGroup
 	// wake is signalled whenever a pull finishes, so its slot is refilled
 	// right away instead of on the next ticker beat.
@@ -46,6 +46,14 @@ type Puller struct {
 
 // errArchivesOnly means TorBox reports the release complete but lists only
 // the packed RAR/ZIP parts, not the extracted video yet.
+// pull is one running pullOne.
+type pull struct {
+	cancel  context.CancelFunc
+	done    chan struct{}
+	dir     string // target directory, set once the download starts
+	aborted bool
+}
+
 var errArchivesOnly = errors.New("torbox lists only archives, extraction not finished")
 
 // DefaultArchiveWait bounds the wait for TorBox to extract a release.
@@ -97,7 +105,7 @@ func NewPuller(opts PullerOptions) *Puller {
 		maxRetries:    opts.MaxRetries,
 		archiveWait:   opts.ArchiveWait,
 		archivesSince: map[string]time.Time{},
-		inflight:      map[string]bool{},
+		inflight:      map[string]*pull{},
 		wake:          make(chan struct{}, 1),
 	}
 }
@@ -162,18 +170,20 @@ func (p *Puller) Tick(ctx context.Context, limit int) {
 			continue
 		}
 		p.mu.Lock()
-		if p.inflight[j.NzoID] || len(p.inflight) >= limit {
+		if p.inflight[j.NzoID] != nil || len(p.inflight) >= limit {
 			p.mu.Unlock()
 			continue
 		}
-		p.inflight[j.NzoID] = true
+		jctx, cancel := context.WithCancel(ctx)
+		pl := &pull{cancel: cancel, done: make(chan struct{})}
+		p.inflight[j.NzoID] = pl
 		p.mu.Unlock()
 
 		p.wg.Add(1)
 		go func(j *job.Job) {
 			defer p.wg.Done()
-			defer p.finish(j.NzoID)
-			p.pullOne(ctx, j)
+			defer p.finish(j.NzoID, pl)
+			p.pullOne(jctx, j)
 		}(j)
 	}
 }
@@ -181,10 +191,51 @@ func (p *Puller) Tick(ctx context.Context, limit int) {
 // Wait blocks until every pull started by Tick has finished.
 func (p *Puller) Wait() { p.wg.Wait() }
 
-func (p *Puller) finish(nzoID string) {
+// Abort stops the pull of nzoID, if one is running, and waits for it to end
+// so nothing writes to its directory afterwards. It returns that directory
+// ("" when no download had started) for the caller to delete.
+func (p *Puller) Abort(ctx context.Context, nzoID string) string {
+	p.mu.Lock()
+	pl := p.inflight[nzoID]
+	if pl == nil {
+		p.mu.Unlock()
+		return ""
+	}
+	pl.aborted = true
+	pl.cancel()
+	p.mu.Unlock()
+	select {
+	case <-pl.done:
+	case <-ctx.Done():
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return pl.dir
+}
+
+// aborted reports whether nzoID's running pull was stopped by Abort; such a
+// pull ends without a retry.
+func (p *Puller) aborted(nzoID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pl := p.inflight[nzoID]
+	return pl != nil && pl.aborted
+}
+
+func (p *Puller) setDir(nzoID, dir string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if pl := p.inflight[nzoID]; pl != nil {
+		pl.dir = dir
+	}
+}
+
+func (p *Puller) finish(nzoID string, pl *pull) {
+	pl.cancel()
 	p.mu.Lock()
 	delete(p.inflight, nzoID)
 	p.mu.Unlock()
+	close(pl.done)
 	select {
 	case p.wake <- struct{}{}:
 	default:
@@ -195,6 +246,10 @@ func (p *Puller) pullOne(ctx context.Context, j *job.Job) {
 	logger := p.log.With("nzo_id", j.NzoID, "source", jobSource(j))
 
 	item, err := p.findItem(ctx, j)
+	if p.aborted(j.NzoID) {
+		logger.Info("puller: aborted by client")
+		return
+	}
 	if err != nil {
 		logger.Warn("puller: lookup failed", "err", describe(err))
 		p.scheduleRetry(ctx, j, "lookup: "+describe(err))
@@ -208,6 +263,10 @@ func (p *Puller) pullOne(ctx context.Context, j *job.Job) {
 
 	subdir := p.subdir(j, item)
 	files, total, err := p.buildFileList(ctx, j, item)
+	if p.aborted(j.NzoID) {
+		logger.Info("puller: aborted by client")
+		return
+	}
 	if errors.Is(err, errArchivesOnly) {
 		p.awaitExtraction(ctx, j, logger)
 		return
@@ -227,7 +286,14 @@ func (p *Puller) pullOne(ctx context.Context, j *job.Job) {
 	logger.Info("puller: starting download",
 		"subdir", subdir, "files", len(files), "bytes_total", total)
 
+	if p.baseDir != "" {
+		p.setDir(j.NzoID, path.Join(p.baseDir, subdir))
+	}
 	abs, err := p.dl.Run(ctx, dlJob)
+	if p.aborted(j.NzoID) {
+		logger.Info("puller: aborted by client")
+		return
+	}
 	if err != nil {
 		logger.Error("puller: download failed", "err", describe(err))
 		p.scheduleRetry(ctx, j, "download: "+describe(err))

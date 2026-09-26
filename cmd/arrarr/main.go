@@ -189,6 +189,7 @@ func run() error {
 		Webhook:     webhookOpts,
 		TorboxQuota: tb.CreateHeadroom,
 		PollHealth:  wm.PollHealth,
+		Discard:     wm.Discard,
 		Version:     versionStr,
 	})
 
